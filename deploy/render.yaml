@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: ripar-agent
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # /health is deliberately unpaid; a paid health check would read as an
+    # outage the moment the wallet ran dry.
+    healthCheckPath: /health
+    envVars:
+      - key: RIPAR_PAY_TO
+        sync: false
+      - key: RIPAR_NETWORK
+        value: mainnet
+      - key: PORT
+        value: 4021

@@ -1,0 +1,13 @@
+{
+  "name": "Ripar Agent",
+  "description": "A paid HTTP endpoint on Algorand. Every call settles in USDC over x402.",
+  "keywords": ["x402", "algorand", "agent", "usdc"],
+  "stack": "container",
+  "env": {
+    "RIPAR_PAY_TO": {
+      "description": "Algorand address that receives settlement. Payments go straight here — Ripar never holds the balance.",
+      "required": true
+    },
+    "RIPAR_NETWORK": { "description": "mainnet or testnet", "value": "mainnet" }
+  }
+}

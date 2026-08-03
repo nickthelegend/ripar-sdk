@@ -1,0 +1,6 @@
+build:
+  docker:
+    web: Dockerfile
+run:
+  # Heroku injects $PORT; the server already reads it.
+  web: node dist/serve-example.js
