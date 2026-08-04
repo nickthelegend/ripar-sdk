@@ -5,7 +5,7 @@ import { ExactAvmScheme } from "@x402/avm/exact/server";
 import { HTTPFacilitatorClient, type HTTPRequestContext } from "@x402/core/server";
 import { manifest } from "./define.js";
 import { resolveFacilitatorNetwork } from "./network.js";
-import { idempotencyGuard, rateLimitGuard, validationGuard } from "./guards.js";
+import { idempotencyGuard, normalizePath, rateLimitGuard, validationGuard } from "./guards.js";
 import { readReceiptHeader } from "./headers.js";
 import { METRICS_CONTENT_TYPE } from "./metrics.js";
 import { normalizePrice, resolvePrice, usdOf } from "./pricing.js";
@@ -88,7 +88,7 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
   });
 
   const app = express();
-  const byPath = new Map(agent.endpoints.map((e) => [`${base}/${e.name}`, e]));
+  const byPath = new Map(agent.endpoints.map((e) => [normalizePath(`${base}/${e.name}`), e]));
 
   // What each request was quoted, so the settled-USD counter reports the amount
   // the caller agreed to rather than the receipt's `amount` — facilitators
@@ -157,10 +157,10 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
 
   /* ── instrumentation and the guards that must precede payment ──────────── */
 
-  const isEndpoint = (path: string) => byPath.has(path);
+  const isEndpoint = (path: string) => byPath.has(normalizePath(path));
 
   app.use((req, res, next) => {
-    const endpoint = byPath.get(req.path);
+    const endpoint = byPath.get(normalizePath(req.path));
     if (!endpoint) return next();
     locals(res).startedAt = Date.now();
     runtime.enter();
@@ -228,7 +228,7 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
   // inside the gate because the point of a window is that the second call
   // costs nothing — it must not reach the facilitator at all.
   app.use(async (req, res, next) => {
-    const endpoint = byPath.get(req.path);
+    const endpoint = byPath.get(normalizePath(req.path));
     if (!endpoint?.subscription) return gate(req, res, next);
 
     let check;

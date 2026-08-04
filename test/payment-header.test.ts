@@ -163,6 +163,25 @@ describe("guards see a paid request", () => {
     expect((await res.json()).error.field).toBe("text");
   });
 
+  it("guards every spelling of the path the router accepts", async () => {
+    // Express is case-insensitive, ignores a trailing slash and collapses
+    // duplicate slashes. The guards looked the path up in an exact-match Map,
+    // so /echo/, /ECHO and //echo missed, skipped validation, and went on to
+    // the payment gate — which does its own regex matching and charged them.
+    // The caller paid for a request no guard had checked.
+    for (const path of ["/echo", "/echo/", "/ECHO", "//echo", "/./echo"]) {
+      const res = await fetch(`${base}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ wrong: "field" }),
+      });
+      // 400 everywhere. A 402 would mean this spelling reached the gate with
+      // an invalid body and would have been charged for it.
+      expect(res.status, `${path} was not validated`).toBe(400);
+      expect((await res.json()).error.field).toBe("text");
+    }
+  });
+
   it("still lets an unpaid, bodyless probe through to the 402", async () => {
     // Price discovery has to work before a caller can build a valid body: the
     // schema they need travels in the 402 they are asking for.

@@ -115,9 +115,25 @@ export function idempotencyGuard(store: IdempotencyStore, applies: Applies): Req
   };
 }
 
+/**
+ * Express's router is case-insensitive and ignores a trailing slash by default,
+ * and it collapses duplicate slashes. An exact-match Map is none of those
+ * things — so `/echo/`, `/ECHO` and `//echo` all reached the payment gate,
+ * which uses its own regex matching and charged for them, while every guard
+ * looked them up, missed, and waved them through unvalidated.
+ *
+ * Normalising the lookup the same way the router does closes the gap. It must
+ * be applied everywhere byPath is consulted, or the guards disagree with each
+ * other about which requests are endpoints.
+ */
+export function normalizePath(path: string): string {
+  const collapsed = path.replace(/\/{2,}/g, "/").toLowerCase();
+  return collapsed.length > 1 ? collapsed.replace(/\/+$/, "") : collapsed;
+}
+
 export function validationGuard(byPath: Map<string, EndpointDef>): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
-    const endpoint = byPath.get(req.path);
+    const endpoint = byPath.get(normalizePath(req.path));
     if (!endpoint?.input) return next();
     // GET carries no body to validate; its schema documents the query instead.
     if ((endpoint.method ?? "POST") === "GET") return next();
