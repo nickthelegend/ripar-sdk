@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Server } from "node:http";
 import express from "express";
+import algosdk from "algosdk";
 import { defineAgent, defineEndpoint } from "../src/define.js";
+import { RiparClient } from "../src/client.js";
 import { createServer } from "../src/server.js";
 import { MemorySubscriptionStore } from "../src/subscriptions.js";
 import { readPaymentRequired } from "../src/headers.js";
@@ -25,11 +27,23 @@ import { ALGORAND_TESTNET_CAIP2 } from "@x402/avm";
 
 const PAY_TO = "PBXELTAXFHNNP3ZQFBC36WKUGVX732UG4CQQH22CP6NNIY5FFIY5UINYAU";
 const PAYER = "B2DGXU2QSRHXNZJMP5FFFU77W5NUMZTZ3X3MSO3PJC4ZQ75CSDL5EKULI4";
-// The truncated form @x402/avm actually accepts. CAIP-2 caps a reference at
-// 32 characters, so this is a PREFIX of the 53-char genesis hash a real
-// facilitator publishes — inventing a longer one here makes ExactAvmScheme
-// throw "Unsupported Algorand network" before any of this is exercised.
-const NETWORK = ALGORAND_TESTNET_CAIP2;
+/**
+ * What a REAL facilitator publishes: the full 53-character genesis hash.
+ *
+ *   GoPlausible /supported : algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=   (53)
+ *   @x402/avm constant     : algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDe               (41)
+ *
+ * CAIP-2 caps a reference at 32 characters, so the exported constant is a
+ * TRUNCATION of what every facilitator actually quotes. That is the whole
+ * reason the client must register the glob "algorand:*" rather than the
+ * constant — @x402/core matches a registration by exact key or glob and has no
+ * prefix fallback, so registering the constant finds no scheme and the client
+ * cannot pay anything.
+ *
+ * Publishing the truncated constant here would make the test agree with a
+ * broken client, which is exactly what it must not do.
+ */
+const NETWORK = `${ALGORAND_TESTNET_CAIP2}xi9/cOUJOiI=`;
 
 /** Counts what the server asked of it, so a test can assert how many times
  *  money actually moved rather than how many requests were made. */
@@ -392,5 +406,92 @@ describe("settlement is actually observed", () => {
       runs: { txId?: string }[];
     };
     expect(runs.runs.filter((r) => r.txId).length).toBe(3);
+  });
+});
+
+/**
+ * RiparClient paying a real Ripar server, all the way through.
+ *
+ * payment-layer.test.ts reconstructed the scheme registration by hand — it
+ * imported x402Client and ExactAvmScheme directly and never touched
+ * RiparClient. So it tested @x402/core's behaviour, not ours: reverting
+ * client.ts to register CAIP2[network] instead of "algorand:*" left it green
+ * while the client could not pay anything at all.
+ *
+ * This constructs the actual client and makes it pay the actual server. The
+ * facilitator is still the only double, and the wallet is a throwaway keypair
+ * with no funds — signing needs no balance, and the facilitator decides
+ * whether a payment is good.
+ */
+describe("RiparClient against a Ripar server", () => {
+  let base: string;
+  let close: () => Promise<void>;
+  let fac: Facilitator;
+  let mnemonic: string;
+
+  beforeAll(async () => {
+    fac = await startFacilitator();
+    const acct = algosdk.generateAccount();
+    mnemonic = algosdk.secretKeyToMnemonic(acct.sk);
+
+    const agent = defineAgent({
+      name: "Client Agent",
+      handle: "client-agent",
+      payTo: PAY_TO,
+      network: "testnet",
+      endpoints: [defineEndpoint({ name: "work", price: "$0.02", handler: () => ({ ok: true }) })],
+    });
+    const app = await createServer(agent, {
+      network: "testnet",
+      payTo: PAY_TO,
+      facilitatorUrl: fac.url,
+    });
+    const server: Server = await new Promise((resolve) => {
+      const s = app.listen(0, () => resolve(s));
+    });
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    close = () => new Promise<void>((r) => server.close(() => r()));
+  });
+
+  afterAll(async () => {
+    await close();
+    await fac.close();
+  });
+
+  it("completes the 402 handshake and returns the handler's answer", async () => {
+    const client = new RiparClient({ mnemonic, network: "testnet", maxPrice: "$1.00" });
+    const res = await client.call(`${base}/work`, { hello: 1 });
+
+    expect(res.status).toBe(200);
+    expect(res.data).toEqual({ ok: true });
+    // A receipt means the middleware settled and the client read it back.
+    expect(res.payment?.txId).toBeTruthy();
+  });
+
+  it("refuses a quote above maxPrice without settling", async () => {
+    const before = fac.settles;
+    const client = new RiparClient({ mnemonic, network: "testnet", maxPrice: "$0.001" });
+    await expect(client.call(`${base}/work`, { hello: 1 })).rejects.toThrow(/maxPrice/);
+    // The cap has to stop the payment, not report it afterwards.
+    expect(fac.settles).toBe(before);
+  });
+
+  it("stops once the daily cap is spent", async () => {
+    const client = new RiparClient({ mnemonic, network: "testnet", maxPerDay: "$0.05" });
+    await client.call(`${base}/work`, {});
+    await client.call(`${base}/work`, {});
+    expect(client.spentToday).toBeCloseTo(0.04, 6);
+    // A third call would take it to $0.06, past the cap.
+    await expect(client.call(`${base}/work`, {})).rejects.toThrow(/daily cap/);
+  });
+
+  it("keeps composed headers when the caller passes their own", async () => {
+    // `...init` used to be spread AFTER the headers object, so any init.headers
+    // replaced the whole thing — dropping content-type, which left the body
+    // unparsed on the server.
+    const client = new RiparClient({ mnemonic, network: "testnet" });
+    const res = await client.call(`${base}/work`, { hello: 1 }, { headers: { "x-trace": "abc" } });
+    expect(res.status).toBe(200);
+    expect(res.payment?.txId).toBeTruthy();
   });
 });
