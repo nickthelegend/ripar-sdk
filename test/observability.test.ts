@@ -48,12 +48,24 @@ describe("x402 headers", () => {
     const receipt = Buffer.from(
       JSON.stringify({ success: true, transaction: "TXID123", payer: "ADDR", amount: "10000", asset: "10458941" })
     ).toString("base64");
-    expect(readReceiptHeader(() => receipt)).toMatchObject({
+
+    // The getter answers only for the name x402 really sends. It used to
+    // ignore its argument and return the receipt for anything asked, which
+    // made the test pass no matter which names the implementation probed —
+    // and the implementation was probing the wrong one, so no settlement was
+    // ever read in production while this stayed green.
+    const only = (name: string) => (n: string) => (n === name ? receipt : null);
+
+    expect(readReceiptHeader(only("PAYMENT-RESPONSE"))).toMatchObject({
       txId: "TXID123",
       payer: "ADDR",
       amount: "10000",
       usd: 0.01,
     });
+    // The older spelling still works, for facilitators that send it.
+    expect(readReceiptHeader(only("X-PAYMENT-RESPONSE"))?.txId).toBe("TXID123");
+    // And a name nobody sends must not produce a receipt.
+    expect(readReceiptHeader(only("SOME-OTHER-HEADER"))).toBeUndefined();
     expect(readReceiptHeader(() => null)).toBeUndefined();
   });
 });

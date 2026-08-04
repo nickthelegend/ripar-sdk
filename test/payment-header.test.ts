@@ -5,6 +5,7 @@ import { defineAgent, defineEndpoint } from "../src/define.js";
 import { createServer } from "../src/server.js";
 import { readPaymentHeader, readReceiptHeader } from "../src/headers.js";
 import { payerFromPaymentHeader } from "../src/identity.js";
+import algosdk from "algosdk";
 
 /**
  * The header names, which is where several silent failures lived.
@@ -187,5 +188,99 @@ describe("guards see a paid request", () => {
     // schema they need travels in the 402 they are asking for.
     const res = await fetch(`${base}/echo`, { method: "POST" });
     expect(res.status).toBe(402);
+  });
+});
+
+/**
+ * per: "payer" rate limiting, over HTTP, with a real signed payment attached.
+ *
+ * The suite had no test that sent a payment header at all, so the default
+ * payer mode was never exercised end to end. It was inert: the guard looked
+ * for X-PAYMENT, saw nothing on every request, and returned next() before
+ * counting anything. An operator who configured a per-payer limit had no
+ * limit.
+ */
+describe("rate limiting by payer", () => {
+  let base: string;
+  let close: () => Promise<void>;
+  let header: string;
+
+  beforeAll(async () => {
+    // A genuinely signed transfer, because payerFromPaymentHeader decodes the
+    // transaction to read its sender. A hand-written payer field would take a
+    // different branch and prove less.
+    const acct = algosdk.generateAccount();
+    const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+      sender: acct.addr,
+      receiver: PAY_TO,
+      amount: 10_000,
+      assetIndex: 10_458_941,
+      suggestedParams: {
+        fee: 1000,
+        firstValid: 1,
+        lastValid: 1000,
+        genesisID: "testnet-v1.0",
+        genesisHash: new Uint8Array(
+          Buffer.from("SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=", "base64")
+        ),
+        flatFee: true,
+      },
+    });
+    const signed = Buffer.from(txn.signTxn(acct.sk)).toString("base64");
+    header = Buffer.from(
+      JSON.stringify({
+        x402Version: 2,
+        scheme: "exact",
+        network: "algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDe",
+        payload: { paymentGroup: [signed], paymentIndex: 0 },
+      })
+    ).toString("base64");
+
+    const agent = defineAgent({
+      name: "Limited Agent",
+      handle: "limited-agent",
+      payTo: PAY_TO,
+      network: "testnet",
+      endpoints: [defineEndpoint({ name: "work", price: "$0.01", handler: () => ({ ok: true }) })],
+    });
+    const app: Express = await createServer(agent, {
+      network: "testnet",
+      payTo: PAY_TO,
+      rateLimit: { perMinute: 3, per: "payer" },
+    });
+    const server: Server = await new Promise((resolve) => {
+      const s = app.listen(0, () => resolve(s));
+    });
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    close = () => new Promise<void>((r) => server.close(() => r()));
+  });
+
+  afterAll(async () => close());
+
+  it("counts a paid caller and cuts them off at the limit", async () => {
+    const codes: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const res = await fetch(`${base}/work`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "PAYMENT-SIGNATURE": header },
+        body: "{}",
+      });
+      codes.push(res.status);
+    }
+    // Three get through to the payment gate (402, since this test attaches no
+    // real settlement), then the limiter stops the rest.
+    expect(codes.filter((c) => c === 429).length, `limiter was inert: ${codes.join(", ")}`).toBe(2);
+    expect(codes.slice(0, 3).every((c) => c === 402)).toBe(true);
+  });
+
+  it("does not count unpaid probes, so asking the price stays free", async () => {
+    // A price probe has no payer to charge the hit to, and cannot reach a
+    // handler either — counting it would make discovery cost the same as a call.
+    const codes: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const res = await fetch(`${base}/work`, { method: "POST" });
+      codes.push(res.status);
+    }
+    expect(codes.every((c) => c === 402)).toBe(true);
   });
 });
