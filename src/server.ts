@@ -15,6 +15,7 @@ import {
   MemorySubscriptionStore,
   checkSubscription,
   issue,
+  type SubscriptionRecord,
   parsePeriod,
   readKey,
   subscriptionHeaders,
@@ -38,6 +39,9 @@ type RiparLocals = {
   /** Set when a valid subscription key let this request past the payment gate,
    *  so the finish hook knows nothing settled and none was expected. */
   coveredBySubscription?: boolean;
+  /** The window minted for this request, pending confirmation that the payment
+   *  actually settled. Reconciled in finishRequest. */
+  issued?: SubscriptionRecord;
 };
 
 function locals(res: Response): RiparLocals {
@@ -160,7 +164,7 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
     if (!endpoint) return next();
     locals(res).startedAt = Date.now();
     runtime.enter();
-    const done = () => finishRequest(runtime, res, endpoint, quoteFor(req, endpoint));
+    const done = () => finishRequest(runtime, res, endpoint, quoteFor(req, endpoint), subStore);
     res.on("finish", done);
     // `finish` never fires if the socket dies mid-response; without `close` the
     // in-flight gauge would climb forever and a drain would never complete.
@@ -255,27 +259,31 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
     const path = `${base}/${e.name}`;
     const method = (e.method ?? "POST").toLowerCase() as "get" | "post";
     app[method](path, async (req, res) => {
-      // Past the gate with a receipt and no active key means this settlement
-      // just bought a window. Mint before the handler runs so the key is on the
-      // response even if the handler throws — the caller paid for the window,
-      // not for the handler succeeding.
+      // Reaching a gated handler at all means x402 returned `payment-verified`
+      // — that is the ONLY signal available here. The settlement receipt is
+      // not: @x402/express buffers the body, runs the handler, and only then
+      // calls processSettlement and writes PAYMENT-RESPONSE. Reading the
+      // receipt at this point always yields undefined, so minting on it minted
+      // nothing and the caller paid for a window it never received.
+      //
+      // So mint on verification and correct it afterwards: `finish` fires once
+      // settlement has been attempted, and revokes the window if the payment
+      // did not actually land.
       if (e.subscription && !locals(res).coveredBySubscription) {
-        const receipt = readPaymentResponse(res);
-        if (receipt) {
-          try {
-            const { key, record } = await issue(subStore, {
-              endpoint: e.name,
-              periodMs: subPeriods.get(e.name)!,
-              usd: fixedUsd.get(e.name) ?? 0,
-              payer: receipt.payer,
-              txId: receipt.txId,
-            });
-            for (const [k, v] of Object.entries(subscriptionHeaders(record, key))) res.setHeader(k, v);
-          } catch {
-            // The money is already settled, so refusing the call would take
-            // payment and give nothing. Serve it, and say the window was lost.
-            res.setHeader("x-ripar-subscription-error", "could not persist the subscription");
-          }
+        try {
+          const { key, record } = await issue(subStore, {
+            endpoint: e.name,
+            periodMs: subPeriods.get(e.name)!,
+            usd: fixedUsd.get(e.name) ?? 0,
+          });
+          // Set here, before the handler writes anything, so the key is on the
+          // response whatever the handler does with the body.
+          for (const [k, v] of Object.entries(subscriptionHeaders(record, key))) res.setHeader(k, v);
+          locals(res).issued = record;
+        } catch {
+          // Better to serve the call than to take payment and refuse it. Say
+          // plainly that the window was lost rather than implying one exists.
+          res.setHeader("x-ripar-subscription-error", "could not persist the subscription");
         }
       }
       return runHandler(e, req, res);
@@ -296,18 +304,46 @@ export function runtimeOf(app: Express): Runtime | undefined {
   return (app as Express & { locals: { ripar?: Runtime } }).locals.ripar;
 }
 
-function finishRequest(runtime: Runtime, res: Response, endpoint: EndpointDef, quotedUsd: number) {
+function finishRequest(
+  runtime: Runtime,
+  res: Response,
+  endpoint: EndpointDef,
+  quotedUsd: number,
+  subStore?: SubscriptionStore
+) {
   const l = locals(res);
   if (l.startedAt == null) return; // already finished; `close` after `finish`
   const ms = Date.now() - l.startedAt;
   l.startedAt = undefined;
 
-  // A settlement receipt on the response is the only proof money moved; the
-  // middleware writes it after the facilitator confirms.
+  // A settlement receipt on the response is the only proof money moved. By
+  // `finish` the middleware has written it — during the handler it had not,
+  // which is why this reconciliation happens here and not there.
   const receipt = readPaymentResponse(res);
   runtime.metrics.record(endpoint.name, res.statusCode, ms / 1000);
   if (receipt) runtime.metrics.recordSettlement(quotedUsd);
   runtime.runs.add({ endpoint: endpoint.name, status: res.statusCode, ms, txId: receipt?.txId });
+
+  // A window was minted on verification alone. If nothing settled, revoke it —
+  // otherwise a payment that failed at the last step still buys 30 days.
+  // If it did settle, bind the record to the transaction that paid for it, so
+  // every window traces back to money that moved, like a reputation score.
+  const issued = l.issued;
+  if (issued && subStore) {
+    l.issued = undefined;
+    if (!receipt || res.statusCode >= 400) {
+      void Promise.resolve(subStore.delete?.(issued.keyHash)).catch(() => {
+        /* nothing further to try; the window expires on its own */
+      });
+    } else if (receipt.txId) {
+      void Promise.resolve(subStore.put({ ...issued, txId: receipt.txId, payer: receipt.payer })).catch(
+        () => {
+          /* the window still works; only its audit trail is thinner */
+        }
+      );
+    }
+  }
+
   runtime.leave();
 }
 

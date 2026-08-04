@@ -49,6 +49,11 @@ export interface SubscriptionStore {
   put(record: SubscriptionRecord): Promise<void> | void;
   /** Drop anything already expired. Called opportunistically, never required. */
   sweep?(now: number): Promise<void> | void;
+  /** Revoke one window. A key is minted when the payment VERIFIES, which is
+   *  before it settles; if settlement then fails, the window has to be taken
+   *  back or a failed payment buys thirty days. A store without this leaks
+   *  those windows until they expire on their own. */
+  delete?(keyHash: string): Promise<void> | void;
 }
 
 export class MemorySubscriptionStore implements SubscriptionStore {
@@ -64,6 +69,10 @@ export class MemorySubscriptionStore implements SubscriptionStore {
 
   sweep(now: number) {
     for (const [hash, r] of this.byHash) if (r.expiresAt <= now) this.byHash.delete(hash);
+  }
+
+  delete(keyHash: string) {
+    this.byHash.delete(keyHash);
   }
 
   /** Test and introspection helper — counts live records only. */

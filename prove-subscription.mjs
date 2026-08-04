@@ -1,5 +1,18 @@
 /**
- * Subscriptions, proved on Algorand TestNet against the real SDK server.
+ * Subscriptions, against real money on Algorand TestNet.
+ *
+ * SCOPE, stated because an earlier version of this file overstated it: this
+ * exercises the subscription LEDGER — checkSubscription, issue, expiry, endpoint
+ * scoping — against settlements that really happen on chain. It does NOT
+ * exercise createServer. It mounts those functions on its own Express app,
+ * which is why it stayed green while createServer minted no keys at all.
+ *
+ * The server wiring is covered by test/subscription-server.test.ts, which runs
+ * the real createServer with the genuine @x402/express middleware and fails
+ * 5 of 7 if the minting logic regresses.
+ *
+ * The two are complementary and neither is sufficient alone: this one proves
+ * the money moves, that one proves the server does the right thing with it.
  *
  * The claim under test is the one the landing page and the docs make: pay once,
  * call free until the window closes. Three things have to be true for that to
@@ -182,5 +195,10 @@ for (const [claim, pass] of Object.entries(results)) {
   console.log(`  ${pass ? "PASS" : "FAIL"}  ${claim}`);
   if (!pass) ok = false;
 }
-console.log(ok ? "\nSubscriptions work end to end on TestNet." : "\nSubscription claim is NOT supported.");
+console.log(
+  ok
+    ? "\nThe subscription ledger holds up against real settlements on TestNet.\n" +
+      "Server wiring is proved separately: npx vitest run test/subscription-server.test.ts"
+    : "\nSubscription claim is NOT supported."
+);
 process.exit(ok ? 0 : 1);

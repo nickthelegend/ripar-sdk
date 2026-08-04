@@ -38,7 +38,20 @@ export function decodeX402Header(raw: string | null | undefined): unknown {
 
 const HEADER_NAMES = {
   required: ["PAYMENT-REQUIRED", "payment-required", "X-Payment-Required", "x-payment-required"],
-  response: ["X-PAYMENT-RESPONSE", "x-payment-response", "X-Payment-Response"],
+  // PAYMENT-RESPONSE first, because that is what @x402/core actually emits
+  // (createSettlementHeaders returns { "PAYMENT-RESPONSE": … }). The X- forms
+  // are an older spelling some facilitators still send. These are DIFFERENT
+  // header names, not casings of one — Node's case-insensitive lookup does not
+  // bridge them, so omitting the un-prefixed form means no receipt is ever
+  // read: no settled-USD counter, no txId on a run, no ctx.payment.
+  response: [
+    "PAYMENT-RESPONSE",
+    "payment-response",
+    "Payment-Response",
+    "X-PAYMENT-RESPONSE",
+    "x-payment-response",
+    "X-Payment-Response",
+  ],
 } as const;
 
 /** The 402's requirements, from a fetch Response. */
