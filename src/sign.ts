@@ -80,8 +80,12 @@ export function manifestSigner(opts: SignManifestOptions): ManifestSigner {
 export function verifyManifest(body: string, signature: string, address: string): boolean {
   try {
     const sig = Buffer.from(signature, "base64");
-    // base64 decoding is lenient enough to turn nonsense into short buffers;
-    // ed25519 signatures are exactly 64 bytes and nacl throws on anything else.
+    // base64 decoding is lenient enough to turn nonsense into short buffers,
+    // and algosdk.verifyBytes THROWS "bad signature size" on anything that is
+    // not exactly 64. The catch below would turn that into false anyway, so
+    // this line is defence in depth rather than the thing making it correct —
+    // it is here so a future refactor that narrows the catch does not turn a
+    // malformed signature into an exception escaping to the caller.
     if (sig.length !== 64) return false;
     return algosdk.verifyBytes(Buffer.from(body, "utf8"), new Uint8Array(sig), address);
   } catch {

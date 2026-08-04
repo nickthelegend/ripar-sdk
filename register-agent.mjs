@@ -16,7 +16,18 @@ import algosdk from "algosdk";
 import fs from "node:fs";
 
 const cfg = JSON.parse(fs.readFileSync("/tmp/testnet-e2e.json", "utf8"));
-const IDENTITY_APP = 768_547_159;
+/* The LIVE IdentityRegistry. This read 768_547_159 until 2026-08-05, which is
+   the generation before last — superseded twice over. A dead registry does not
+   error: it answers, with nothing. So this script would have registered against
+   an app nobody reads, `ad_` lookups would have come back empty, and the card's
+   agentId claim would have resolved to a record that exists on a registry no
+   caller consults.
+
+   It survived a sweep because of the underscores: a grep for `768572968` does
+   not match `768_547_159`, and neither does a grep for the old id spelled
+   without them. `ripar-contracts/scripts/check-registry-ids.mjs` normalises
+   both spellings against DEPLOYED.json and is what finally caught it. */
+const IDENTITY_APP = 768_572_968;
 const DOMAIN = "ripar-agent.vercel.app";
 
 const algod = new algosdk.Algodv2("", "https://testnet-api.algonode.cloud", "");

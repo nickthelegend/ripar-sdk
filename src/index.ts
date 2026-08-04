@@ -101,3 +101,34 @@ export { accessGuard, FreeTier } from "./access.js";
 export type { AccessOptions, FreeTierOptions } from "./access.js";
 export { WebhookSender, signPayload, verifySignature } from "./webhooks.js";
 export type { WebhookOptions, SettlementEvent } from "./webhooks.js";
+
+export {
+  pickAgent,
+  readScore,
+  decodeScore,
+  verifyManifestSignature,
+  manifestSigningBytes,
+  canonicalJson,
+  readRetryAfter,
+  parseRetryAfter,
+  newIdempotencyKey,
+  headerValue,
+  headerRecord,
+  QuoteHistory,
+  driftReport,
+  observationOf,
+  IDEMPOTENCY_HEADER,
+  REPUTATION_APP,
+  DEFAULT_RETRY_AFTER_CAP_MS,
+} from "./client-extras.js";
+export type {
+  RetryAfterAdvice,
+  AgentScore,
+  AgentCandidate,
+  RankedAgent,
+  AgentRanking,
+  PickAgentOptions,
+  QuoteObservation,
+  DriftReport,
+  SignatureVerdict,
+} from "./client-extras.js";
