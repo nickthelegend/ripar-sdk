@@ -29,8 +29,14 @@ export type SettlementEvent = {
   amount?: string;
   asset?: string;
   /** The QUOTE in USD — what the caller agreed to, not the receipt's `amount`,
-   *  which facilitators report in different units on different networks. */
+   *  which facilitators report in different units on different networks. Zero
+   *  for an endpoint priced in an ASA, where `quote` carries the real figure —
+   *  nothing here knows what an arbitrary asset is worth in dollars, and a
+   *  guess in this field would be indistinguishable from revenue. */
   usd: number;
+  /** Present when the endpoint quoted an ASA rather than dollars. `amount` is
+   *  atomic units of `asset`; `decimals` is what makes it readable. */
+  quote?: { amount: string; asset: number; decimals: number; symbol?: string };
   status: number;
   ms: number;
   at: string;

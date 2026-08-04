@@ -63,7 +63,21 @@ export type HandlerContext<B = unknown> = {
   /** Present once payment has been verified and settled. `amount` is atomic
    *  units of `asset` — `usd` is that converted, when the decimals are known. */
   payment?: { txId?: string; payer?: string; amount: string; usd?: number; asset: string };
+  /** The W3C trace this call belongs to — the caller's if they sent a
+   *  `traceparent`, ours otherwise. Put it on anything this handler logs or
+   *  calls onward and a paid chain becomes one trace instead of four. */
+  traceId?: string;
+  /** Only on an endpoint declared `stream: true`; absent otherwise, which is
+   *  what makes `ctx.write?.()` a compile-time reminder that an ordinary
+   *  endpoint has nothing to write frames to. Read stream.ts before promising
+   *  anyone incremental delivery. */
+  write?: (data: unknown, opts?: { event?: string; id?: string; retry?: number }) => void;
 };
+
+/** What a `stream: true` handler is handed — the same context with `write`
+ *  guaranteed, so a streaming handler can be typed without optional chaining. */
+export type StreamHandlerContext<B = unknown> = HandlerContext<B> &
+  Required<Pick<HandlerContext<B>, "write">>;
 
 export type Handler<B = any, R = unknown> = (ctx: HandlerContext<B>) => R | Promise<R>;
 
@@ -80,11 +94,38 @@ export type PriceContext<B = any> = {
 export type PriceFn<B = any> = (ctx: PriceContext<B>) => string | Promise<string>;
 
 /**
+ * A price quoted in an Algorand ASA that is not USDC.
+ *
+ * `amount` is in WHOLE units — "1.5" of a six-decimal asset — because that is
+ * the number an operator means, and `decimals` converts it to the atomic units
+ * the 402 must carry. `decimals` is required and not guessed: an ASA's decimals
+ * are a property of that specific asset, and assuming six for an asset that has
+ * two overcharges by ten thousand times. Nothing in this SDK will look them up
+ * for you, because a lookup that fails at request time would have to either
+ * guess or refuse, and both are worse than being told.
+ */
+export type AssetPrice = {
+  /** Whole units, e.g. "1.5". Never atomic units — see `decimals`. */
+  amount: string;
+  /** Algorand ASA id. */
+  asset: number | string;
+  /** The asset's decimals, exactly as the ASA declares them. */
+  decimals: number;
+  /** Ticker, published in discovery so a caller can display the quote. Never
+   *  used for conversion — a symbol is not an identifier, and two ASAs may
+   *  legitimately call themselves the same thing. */
+  symbol?: string;
+};
+
+/**
  * Price is a USD-denominated string ("$0.01") because that is what the x402
  * `accepts` block takes; the facilitator converts to the asset's base units.
- * A function is evaluated per request and quoted in that request's 402.
+ * An `AssetPrice` skips that conversion and quotes a specific ASA directly. A
+ * function is evaluated per request and quoted in that request's 402 — and
+ * returns dollars only, because a per-request asset switch would mean the
+ * caller's client has to re-decide which asset it holds on every call.
  */
-export type Price<B = any> = string | PriceFn<B>;
+export type Price<B = any> = string | AssetPrice | PriceFn<B>;
 
 export type SubscriptionSpec = {
   /** What the window costs, quoted once. "$5.00". */
@@ -109,6 +150,34 @@ type EndpointBase<B = any, R = unknown> = {
   /** Publish to the discovery index. Private endpoints still take payment. */
   listed?: boolean;
   tags?: string[];
+  /**
+   * Answer as `text/event-stream`, with the handler writing frames through
+   * `ctx.write` instead of returning a body.
+   *
+   * Read stream.ts before you tell a caller this streams. Behind the payment
+   * gate it does not: @x402/express buffers every write until settlement, which
+   * was measured rather than assumed. Off the gate — a live subscription
+   * window, a free-tier call — frames leave as they are written. Each response
+   * says which it was in `x-ripar-stream`.
+   */
+  stream?: boolean;
+  /** Cap on this endpoint's request body, in bytes. Checked before the payment
+   *  gate, so an oversized request is refused without being charged. */
+  maxBodyBytes?: number;
+  /** Replaces the server-wide rate limit for this route only — one expensive
+   *  endpoint should not have to set the limit for every cheap one. */
+  rateLimit?: RateLimitOptions;
+  /** RFC 8594. The date this endpoint stops existing, published as a `Sunset`
+   *  header on every response so a caller's client can warn before the day it
+   *  starts returning 404. An ISO date, or a Date. */
+  sunset?: string | Date;
+  /** RFC 9745. `true` says "deprecated, no date given"; a date says when it
+   *  became so. Emitted on every response for this endpoint. */
+  deprecated?: boolean | string | Date;
+  /** Where the migration is written up. Published as `Link: <url>;
+   *  rel="sunset"`, which is the half of RFC 8594 that tells a caller what to
+   *  do instead of merely when to panic. */
+  sunsetLink?: string;
   handler: Handler<B, R>;
 };
 
@@ -185,6 +254,7 @@ import type { AccessOptions, FreeTierOptions } from "./access.js";
 import type { WebhookOptions } from "./webhooks.js";
 import type { Logger, LoggerOptions } from "./logging.js";
 import type { OpenApiOptions } from "./openapi.js";
+import type { SignManifestOptions } from "./sign.js";
 
 export type ServeOptions = {
   port?: number;
@@ -229,6 +299,18 @@ export type ServeOptions = {
   logging?: LoggerOptions | Logger;
   /** Serve GET /openapi.json, generated from the endpoints themselves. */
   openapi?: boolean | OpenApiOptions;
+  /** Sign the discovery manifest with an Algorand key, so a caller can tell
+   *  whether the `payTo` they are about to pay is the one the agent published.
+   *  See sign.ts — verifying against the address in the header proves nothing. */
+  signManifest?: SignManifestOptions;
+  /** Histogram bucket edges for ripar_request_duration_seconds, in seconds.
+   *  The default is Prometheus's own, which tops out at 10s — for an agent
+   *  whose calls take 30 the top bucket swallows everything and every quantile
+   *  above the median reads as +Inf. */
+  metricsBuckets?: number[];
+  /** Seconds to put in `Retry-After` when the facilitator is unreachable.
+   *  Default 5. */
+  facilitatorRetryAfter?: number;
   /** Named dependency probes for GET /health. A probe that throws or returns
    *  false makes the agent report unhealthy, which is what a load balancer
    *  needs and `{ ok: true }` can never provide. */

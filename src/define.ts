@@ -1,3 +1,4 @@
+import { isAssetPrice, normalizeAssetPrice } from "./pricing.js";
 import { parsePeriod } from "./subscriptions.js";
 import { RiparError, type AgentDef, type EndpointDef, type Handler, type InputSchema } from "./types.js";
 
@@ -25,6 +26,25 @@ export function defineEndpoint<B = any, R = unknown>(def: EndpointDef<B, R>): En
       `Endpoint "${def.name}" timeout must be between 1000ms and 300000ms.`,
       "invalid_timeout"
     );
+  }
+  if (def.maxBodyBytes != null && (!Number.isInteger(def.maxBodyBytes) || def.maxBodyBytes < 1)) {
+    throw new RiparError(
+      `Endpoint "${def.name}" maxBodyBytes must be a positive whole number of bytes.`,
+      "invalid_body_limit"
+    );
+  }
+  if (def.rateLimit != null && !(def.rateLimit.perMinute >= 1)) {
+    throw new RiparError(
+      `Endpoint "${def.name}" rateLimit.perMinute must be at least 1.`,
+      "invalid_rate_limit"
+    );
+  }
+  // A sunset date that does not parse is worse than none: it becomes an
+  // `Invalid Date` in a header, and a client that was going to warn its operator
+  // silently stops.
+  if (def.sunset != null) assertDate(def.sunset, `Endpoint "${def.name}" sunset`);
+  if (typeof def.deprecated === "string" || def.deprecated instanceof Date) {
+    assertDate(def.deprecated, `Endpoint "${def.name}" deprecated`);
   }
   return {
     method: "POST",
@@ -81,15 +101,42 @@ export function manifest(agent: AgentDef, baseUrl: string) {
           ? e.subscription.price
           : typeof e.price === "function"
             ? (e.priceHint ?? "dynamic")
-            : e.price,
-        pricing: e.subscription ? "subscription" : typeof e.price === "function" ? "dynamic" : "fixed",
+            : isAssetPrice(e.price)
+              ? `${e.price.amount} ${e.price.symbol ?? `ASA ${e.price.asset}`}`
+              : e.price,
+        pricing: e.subscription
+          ? "subscription"
+          : typeof e.price === "function"
+            ? "dynamic"
+            : isAssetPrice(e.price)
+              ? "asset"
+              : "fixed",
         // A browsing agent needs to know the quote buys a window, not a call —
         // otherwise $5.00 looks like an extremely expensive single request.
         ...(e.subscription ? { period: String(e.subscription.period) } : {}),
+        // The machine-readable half of an ASA quote. A caller that holds this
+        // asset needs the id and the decimals, not the pretty string above.
+        ...(isAssetPrice(e.price)
+          ? { asset: { id: Number(e.price.asset), decimals: e.price.decimals, symbol: e.price.symbol } }
+          : {}),
+        // Stated in discovery rather than only in a header, so a caller can
+        // decide whether to route to this endpoint before spending anything on
+        // it. The wording is the honest one — see stream.ts.
+        ...(e.stream
+          ? { stream: { contentType: "text/event-stream", delivery: "buffered-until-settlement" } }
+          : {}),
+        ...(e.deprecated ? { deprecated: true } : {}),
+        ...(e.sunset ? { sunset: isoDate(e.sunset) } : {}),
+        ...(e.maxBodyBytes ? { maxBodyBytes: e.maxBodyBytes } : {}),
         input: e.input,
         tags: e.tags,
       })),
   };
+}
+
+/** An ISO instant, from either form the author may have written. */
+export function isoDate(value: string | Date): string {
+  return (value instanceof Date ? value : new Date(value)).toISOString();
 }
 
 /* ── validation, with messages that say what to do ────────────────────── */
@@ -125,10 +172,27 @@ function assertAddress(addr: string) {
   }
 }
 
+function assertDate(value: string | Date, what: string) {
+  const at = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(at.getTime())) {
+    throw new RiparError(
+      `${what} "${String(value)}" is not a date. Use an ISO date like "2026-12-01".`,
+      "invalid_date"
+    );
+  }
+}
+
 function assertPrice(price: unknown) {
   // A price function is quoted per request, so there is nothing to check until
   // one arrives — resolvePrice validates whatever it returns, at that point.
   if (typeof price === "function") return;
+  // An ASA quote validates its own asset id, decimals and amount, and throws
+  // with the same messages the 402 path would — so a bad one is a boot failure
+  // rather than a 500 on the first caller.
+  if (isAssetPrice(price)) {
+    normalizeAssetPrice(price, "this endpoint");
+    return;
+  }
   if (!/^\$?\d+(\.\d+)?$/.test(String(price))) {
     throw new RiparError(
       `Price "${price}" must look like "$0.01" — a USD amount the facilitator converts to the asset's base units.`,

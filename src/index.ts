@@ -1,5 +1,21 @@
-export { defineEndpoint, defineAgent, manifest } from "./define.js";
+export { defineEndpoint, defineAgent, manifest, isoDate } from "./define.js";
 export { createServer, serve, runtimeOf } from "./server.js";
+export type { RiparServer, RiparHandle } from "./server.js";
+export { sseFrame, sseComment, SSE_HEADERS, STREAM_HEADER } from "./stream.js";
+export type { FrameOptions, StreamDelivery } from "./stream.js";
+export { parseTraceparent, traceContext, newTraceId, newSpanId } from "./trace.js";
+export type { TraceContext } from "./trace.js";
+export {
+  manifestSigner,
+  verifyManifest,
+  MANIFEST_SIGNATURE_HEADER,
+  MANIFEST_SIGNER_HEADER,
+  MANIFEST_ALGORITHM_HEADER,
+  MANIFEST_ALGORITHM,
+} from "./sign.js";
+export type { SignManifestOptions, ManifestSigner } from "./sign.js";
+export { watchFacilitator, watchingFacilitator, facilitatorOutage, outageBody } from "./facilitator.js";
+export type { FacilitatorOutage, FacilitatorStage } from "./facilitator.js";
 export { RiparClient, priceOf, pickAccept } from "./client.js";
 export type {
   ClientOptions,
@@ -24,13 +40,15 @@ export { installShutdown } from "./shutdown.js";
 export type { ShutdownOptions, ShutdownResult } from "./shutdown.js";
 export { validateInput } from "./validate.js";
 export type { ValidationFailure } from "./validate.js";
-export { idempotencyGuard, rateLimitGuard, validationGuard } from "./guards.js";
+export { bodyLimitGuard, bodyLimitVerify, idempotencyGuard, rateLimitGuard, validationGuard } from "./guards.js";
+export { isAssetPrice, normalizeAssetPrice, normalizePrice, resolvePrice, toAtomic, usdOf } from "./pricing.js";
+export type { AssetQuote } from "./pricing.js";
 export { payerFromPaymentHeader } from "./identity.js";
 export { backoffDelay, isRetryable, DEFAULT_RETRY } from "./retry.js";
 export type { RetryOptions } from "./retry.js";
 export { SpendLedger } from "./spend.js";
 export { Runtime } from "./runtime.js";
-export { Metrics, METRICS_CONTENT_TYPE } from "./metrics.js";
+export { Metrics, METRICS_CONTENT_TYPE, DEFAULT_BUCKETS } from "./metrics.js";
 export { RunRecorder } from "./runs.js";
 export { RateLimiter } from "./ratelimit.js";
 export { IdempotencyStore } from "./idempotency.js";
@@ -56,6 +74,7 @@ export {
 } from "./types.js";
 export type {
   AgentDef,
+  AssetPrice,
   EndpointDef,
   Handler,
   HandlerContext,
@@ -68,6 +87,7 @@ export type {
   RateLimitOptions,
   RunRecord,
   ServeOptions,
+  StreamHandlerContext,
 } from "./types.js";
 export { corsGuard } from "./cors.js";
 export type { CorsOptions } from "./cors.js";

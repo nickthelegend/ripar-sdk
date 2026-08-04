@@ -13,7 +13,7 @@ import type { IdempotencyOptions, RateLimitOptions } from "./types.js";
  * counters or drain each other's requests.
  */
 export class Runtime {
-  readonly metrics = new Metrics();
+  readonly metrics: Metrics;
   readonly runs: RunRecorder;
   readonly rateLimiter?: RateLimiter;
   readonly idempotency?: IdempotencyStore;
@@ -26,7 +26,9 @@ export class Runtime {
     runsCapacity?: number;
     rateLimit?: RateLimitOptions;
     idempotency?: IdempotencyOptions;
+    metricsBuckets?: number[];
   } = {}) {
+    this.metrics = new Metrics(opts.metricsBuckets);
     this.runs = new RunRecorder(opts.runsCapacity ?? 100);
     if (opts.rateLimit) this.rateLimiter = new RateLimiter(opts.rateLimit);
     if (opts.idempotency) this.idempotency = new IdempotencyStore(opts.idempotency);

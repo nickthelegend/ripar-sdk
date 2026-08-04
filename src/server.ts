@@ -1,5 +1,6 @@
 import type { Server } from "node:http";
-import express, { type Express, type Request, type Response } from "express";
+import type { AddressInfo } from "node:net";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactAvmScheme } from "@x402/avm/exact/server";
 import { HTTPFacilitatorClient, type HTTPRequestContext } from "@x402/core/server";
@@ -9,15 +10,36 @@ import { corsGuard } from "./cors.js";
 import { Logger, requestLine } from "./logging.js";
 import { openApiDocument } from "./openapi.js";
 import { WebhookSender } from "./webhooks.js";
-import { manifest } from "./define.js";
+import { isoDate, manifest } from "./define.js";
+import { facilitatorOutage, outageBody, watchFacilitator, watchingFacilitator } from "./facilitator.js";
 import { resolveFacilitatorNetwork } from "./network.js";
-import { idempotencyGuard, normalizePath, rateLimitGuard, validationGuard } from "./guards.js";
+import {
+  bodyLimitGuard,
+  bodyLimitVerify,
+  idempotencyGuard,
+  normalizePath,
+  rateLimitGuard,
+  tooLarge,
+  validationGuard,
+} from "./guards.js";
 import { readPaymentHeader, readReceiptHeader } from "./headers.js";
 import { payerFromPaymentHeader } from "./identity.js";
+import type { Metrics } from "./metrics.js";
 import { METRICS_CONTENT_TYPE } from "./metrics.js";
-import { normalizePrice, resolvePrice, usdOf } from "./pricing.js";
+import { isAssetPrice, normalizeAssetPrice, normalizePrice, resolvePrice, usdOf, type AssetQuote } from "./pricing.js";
+import { RateLimiter } from "./ratelimit.js";
+import type { RunRecorder } from "./runs.js";
 import { Runtime } from "./runtime.js";
+import {
+  MANIFEST_ALGORITHM,
+  MANIFEST_ALGORITHM_HEADER,
+  MANIFEST_SIGNATURE_HEADER,
+  MANIFEST_SIGNER_HEADER,
+  manifestSigner,
+} from "./sign.js";
 import { installShutdown, type ShutdownResult } from "./shutdown.js";
+import { SSE_HEADERS, STREAM_HEADER, sseFrame, type StreamDelivery } from "./stream.js";
+import { traceContext, type TraceContext } from "./trace.js";
 import {
   MemorySubscriptionStore,
   checkSubscription,
@@ -52,6 +74,13 @@ type RiparLocals = {
   /** Set when the free tier waved this request past the gate. The allowance is
    *  spent in finishRequest rather than here, so a failure does not consume it. */
   freeFor?: string;
+  /** The W3C trace this request belongs to, resolved once so the response
+   *  header, the log line and the handler all name the same id. */
+  trace?: TraceContext;
+  /** The ASA a non-USD endpoint quoted, kept so the settlement event can say
+   *  what was actually charged instead of reporting a dollar figure nobody
+   *  computed. */
+  assetQuote?: AssetQuote;
 };
 
 function locals(res: Response): RiparLocals {
@@ -95,16 +124,30 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
     runsCapacity: opts.runsCapacity,
     rateLimit: opts.rateLimit,
     idempotency: opts.idempotency,
+    metricsBuckets: opts.metricsBuckets,
   });
 
   const app = express();
   const byPath = new Map(agent.endpoints.map((e) => [normalizePath(`${base}/${e.name}`), e]));
+  const endpointAt = (path: string) => byPath.get(normalizePath(path));
+
+  // Per-endpoint caps, resolved once at startup. A limiter per endpoint rather
+  // than one shared bucket: the point of overriding the limit for a route is
+  // that its traffic is counted separately from everything else's.
+  const routeLimiters = new Map<string, RateLimiter>();
+  for (const e of agent.endpoints) {
+    if (e.rateLimit) routeLimiters.set(normalizePath(`${base}/${e.name}`), new RateLimiter(e.rateLimit));
+  }
+  const limiterFor = (path: string) => routeLimiters.get(normalizePath(path)) ?? runtime.rateLimiter;
+  const bodyLimitFor = (path: string) => endpointAt(path)?.maxBodyBytes;
 
   // What each request was quoted, so the settled-USD counter reports the amount
   // the caller agreed to rather than the receipt's `amount` — facilitators
   // report that in base units on some networks and USD on others, and summing
   // the two together produces a number nobody can interpret.
   const fixedUsd = new Map<string, number>();
+  /** The ASA quote for an endpoint priced in something other than dollars. */
+  const assetQuotes = new Map<string, AssetQuote>();
   // A dynamic quote only exists inside x402's price callback, whose context
   // carries no request handle. `getBody()` returns the very object express
   // parsed for this request, which gives us a per-request key.
@@ -113,6 +156,17 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
     if (typeof e.price !== "function") return fixedUsd.get(e.name) ?? 0;
     return isObject(req.body) ? (dynamicUsd.get(req.body) ?? 0) : 0;
   };
+
+  // First of everything, including the drain gate: a 503 that cannot be tied
+  // back to the call that triggered it is exactly the response an operator most
+  // needs to trace. Every response leaves with a traceparent, whether or not
+  // one arrived.
+  app.use((req, res, next) => {
+    const trace = traceContext(req.headers["traceparent"]);
+    locals(res).trace = trace;
+    res.setHeader("traceparent", trace.traceparent);
+    next();
+  });
 
   // Refuse new work the moment SIGTERM lands. Answering 503 beats accepting a
   // request the process will not be alive long enough to finish — and a caller
@@ -131,7 +185,31 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
   // both harmless and necessary — a 503 here shows up as an opaque CORS error.
   if (opts.cors) app.use(corsGuard(opts.cors));
 
-  app.use(express.json({ limit: "10mb" }));
+  // Before the body is read, and therefore before anything can be charged for
+  // it. The verify hook measures what actually arrived, because Content-Length
+  // is caller-supplied and a chunked request omits it entirely.
+  app.use(bodyLimitGuard(bodyLimitFor));
+  app.use(express.json({ limit: "10mb", verify: bodyLimitVerify(bodyLimitFor) }));
+
+  // Registered immediately after the parser so nothing else can shadow it: a
+  // body that is too large, or is not JSON at all, otherwise reaches Express's
+  // default handler and comes back as an HTML stack trace with no error code a
+  // caller can branch on.
+  app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+    const e = err as { status?: number; statusCode?: number; type?: string; message?: string; ripar?: { limit: number; size: number } };
+    if (!e || res.headersSent) return next(err);
+    const status = e.status ?? e.statusCode;
+    if (e.type === "entity.too.large" || status === 413) {
+      const limit = e.ripar?.limit ?? bodyLimitFor(req.path) ?? 0;
+      return tooLarge(res, e.ripar?.size ?? (Number(req.headers["content-length"]) || 0), limit);
+    }
+    if (status === 400 || e.type === "entity.parse.failed") {
+      return res.status(400).json({
+        error: { code: "invalid_json", message: `The request body is not valid JSON: ${e.message ?? "parse failed"}` },
+      });
+    }
+    return next(err);
+  });
 
   const log = opts.logging
     ? opts.logging instanceof Logger
@@ -168,16 +246,32 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
       .json({ ok, ...base_, checks: Object.fromEntries(settled.map((c) => [c.name, c])) });
   });
 
+  // Built once at startup so a bad key fails the boot rather than the first
+  // caller who tries to verify a manifest.
+  const signer = opts.signManifest ? manifestSigner(opts.signManifest) : null;
+
   // Free, and deliberately so — discovery has to work before payment can.
   app.get(`${base}/.well-known/ripar.json`, (req, res) => {
-    res.json({
+    const doc = {
       ...manifest(agent, `${publicOrigin(req)}${base}`),
       x402: {
         facilitator: facilitatorUrl,
         network: networkId,
         asset: { id: USDC_ASSET_ID[network], symbol: "USDC", decimals: 6 },
       },
-    });
+      ...(signer ? { signedBy: signer.address } : {}),
+    };
+    if (!signer) return res.json(doc);
+
+    // Serialised ONCE and sent verbatim. `res.json(doc)` would serialise a
+    // second time, and a signature over a different serialisation of the same
+    // object is a signature that fails verification for reasons nobody can see
+    // by reading the document.
+    const body = JSON.stringify(doc);
+    res.setHeader(MANIFEST_SIGNATURE_HEADER, signer.sign(body));
+    res.setHeader(MANIFEST_SIGNER_HEADER, signer.address);
+    res.setHeader(MANIFEST_ALGORITHM_HEADER, MANIFEST_ALGORITHM);
+    res.type("application/json").send(body);
   });
 
   if (opts.openapi) {
@@ -216,6 +310,10 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
     const endpoint = byPath.get(normalizePath(req.path));
     if (!endpoint) return next();
     locals(res).startedAt = Date.now();
+    // On every response for this endpoint, not only the 200: a client that
+    // learns an endpoint is going away from its successful calls learns it a
+    // week later than one that also sees it on a 402 or a 429.
+    sunsetHeaders(res, endpoint);
     runtime.enter();
     const done = () =>
       finishRequest(runtime, res, endpoint, quoteFor(req, endpoint), subStore, {
@@ -232,7 +330,10 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
   });
 
   if (opts.access) app.use(accessGuard(opts.access, isEndpoint));
-  if (runtime.rateLimiter) app.use(rateLimitGuard(runtime.rateLimiter, isEndpoint));
+  // Installed when EITHER a server-wide limit or any per-endpoint one exists;
+  // `limiterFor` then decides per path, and returns nothing for a route with
+  // neither.
+  if (runtime.rateLimiter || routeLimiters.size) app.use(rateLimitGuard(limiterFor, isEndpoint));
   if (runtime.idempotency) app.use(idempotencyGuard(runtime.idempotency, isEndpoint));
   app.use(validationGuard(byPath));
 
@@ -258,6 +359,17 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
       const fixed = normalizePrice(e.subscription.price, e.name);
       fixedUsd.set(e.name, usdOf(fixed));
       price = fixed;
+    } else if (isAssetPrice(e.price)) {
+      // An ASA quote is handed to x402 already converted, because that is the
+      // one shape ExactAvmScheme.parsePrice passes through untouched — a dollar
+      // string would be run through its USDC conversion instead, and the 402
+      // would name USDC no matter which asset was configured.
+      const quote = normalizeAssetPrice(e.price, e.name);
+      assetQuotes.set(e.name, quote);
+      // Deliberately not a USD figure. Nothing here knows what this asset is
+      // worth, and inventing a number would put fiction in the revenue counter.
+      fixedUsd.set(e.name, 0);
+      price = quote;
     } else if (typeof e.price === "function") {
       price = async (ctx: HTTPRequestContext) => {
         const pctx = priceContext(ctx);
@@ -296,13 +408,62 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
     };
   }
 
-  const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
+  // Wrapped so a transport failure or a 5xx from the facilitator is recorded
+  // before x402 turns it into an answer the caller cannot act on. It only
+  // watches — every error is rethrown unchanged, so which payments settle is
+  // decided by exactly the same code as before.
+  const facilitatorClient = watchFacilitator(new HTTPFacilitatorClient({ url: facilitatorUrl }));
   const resourceServer = new x402ResourceServer(facilitatorClient);
   // Registered for every Algorand network rather than one: the same build then
   // runs against TestNet or MainNet purely from config.
   resourceServer.register("algorand:*", new ExactAvmScheme());
 
-  const gate = paymentMiddleware(routes as never, resourceServer);
+  const rawGate = paymentMiddleware(routes as never, resourceServer);
+  const retryAfter = Math.max(1, Math.floor(opts.facilitatorRetryAfter ?? 5));
+
+  /**
+   * The payment gate, with a facilitator outage answered as one.
+   *
+   * `res.json` is intercepted for the life of the request rather than only
+   * until the handler runs, because the settle call happens AFTER the handler
+   * has written its body — the middleware discards what the handler buffered
+   * and writes its own 402, and that is the moment a caller most needs to be
+   * told the difference between "rejected" and "unreachable".
+   *
+   * The interception converts nothing unless a facilitator failure was actually
+   * recorded during this request, so an ordinary 402 quote passes through
+   * untouched.
+   */
+  const gate = (req: Request, res: Response, next: NextFunction) =>
+    watchingFacilitator(() => {
+      const json = res.json.bind(res);
+      const status = res.status.bind(res);
+      res.json = (body: unknown) => {
+        const outage = facilitatorOutage();
+        if (!outage || res.headersSent) return json(body);
+        res.json = json;
+        res.setHeader("Retry-After", String(retryAfter));
+        status(503);
+        log?.warn("facilitator unavailable", {
+          endpoint: endpointAt(req.path)?.name,
+          stage: outage.stage,
+          facilitator: facilitatorUrl,
+          detail: outage.message,
+          traceId: locals(res).trace?.traceId,
+        });
+        return json(outageBody(outage, facilitatorUrl, retryAfter));
+      };
+      return rawGate(req, res, (err?: unknown) => {
+        // x402 hands a transport failure to Express's error handler, which
+        // renders a 500 HTML stack trace. Same outage, same answer.
+        const outage = facilitatorOutage();
+        if (err && outage && !res.headersSent) {
+          res.setHeader("Retry-After", String(retryAfter));
+          return status(503).json(outageBody(outage, facilitatorUrl, retryAfter));
+        }
+        return next(err as never);
+      });
+    });
 
   // A live subscription key skips the gate entirely. Placed here rather than
   // inside the gate because the point of a window is that the second call
@@ -380,6 +541,7 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
           res.setHeader("x-ripar-subscription-error", "could not persist the subscription");
         }
       }
+      if (assetQuotes.has(e.name)) locals(res).assetQuote = assetQuotes.get(e.name);
       return runHandler(e, req, res);
     });
   }
@@ -388,8 +550,44 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
     res.status(404).json({ error: { code: "not_found", message: "No such endpoint on this agent." } });
   });
 
+  // Last, so it catches anything thrown by a middleware registered above it —
+  // including the payment gate handing Express a facilitator failure. Without
+  // it the caller gets Express's HTML stack trace, which is both unparseable
+  // and a small information leak.
+  app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) return next(err);
+    log?.error("unhandled", {
+      endpoint: endpointAt(req.path)?.name,
+      detail: (err as Error)?.message,
+      traceId: locals(res).trace?.traceId,
+    });
+    res.status(500).json({
+      error: { code: "internal_error", message: (err as Error)?.message ?? "The request failed." },
+    });
+  });
+
   (app as Express & { locals: { ripar?: Runtime } }).locals.ripar = runtime;
   return app;
+}
+
+/**
+ * RFC 8594 `Sunset` and RFC 9745 `Deprecation`, so a caller's client can warn
+ * before the endpoint disappears.
+ *
+ * Both are HTTP-dates, not ISO strings — a `Sunset: 2026-12-01T00:00:00.000Z`
+ * is malformed and every conforming client drops it, which turns the whole
+ * feature into a header nobody reads. `Deprecation: true` is the draft form
+ * that is actually deployed and is all a boolean can honestly say; given a date
+ * we send RFC 9745's `@<unix-seconds>` instead, which says when.
+ */
+function sunsetHeaders(res: Response, e: EndpointDef) {
+  if (e.sunset) res.setHeader("Sunset", new Date(isoDate(e.sunset)).toUTCString());
+  if (e.deprecated === true) res.setHeader("Deprecation", "true");
+  else if (e.deprecated) {
+    res.setHeader("Deprecation", `@${Math.floor(new Date(isoDate(e.deprecated)).getTime() / 1000)}`);
+  }
+  // The half of RFC 8594 that says what to do instead of merely when to panic.
+  if (e.sunsetLink) res.setHeader("Link", `<${e.sunsetLink}>; rel="sunset"`);
 }
 
 /** The runtime a served app owns — metrics, run history, drain state. Exposed
@@ -462,6 +660,9 @@ function finishRequest(
       usd: receipt ? quotedUsd : undefined,
       txId: receipt?.txId,
       payer: receipt?.payer,
+      // The field that makes this line joinable with the caller's own logs, and
+      // with the logs of whatever this handler called in turn.
+      traceId: l.trace?.traceId,
     }),
     ...(free !== undefined ? { free: true } : {}),
   });
@@ -477,6 +678,19 @@ function finishRequest(
       amount: receipt.amount,
       asset: receipt.asset,
       usd: quotedUsd,
+      // An ASA quote is reported as itself. `usd: 0` alone would read as a free
+      // call to anything summing these, and there is no exchange rate here to
+      // turn 1.5 of an arbitrary ASA into dollars with.
+      ...(l.assetQuote
+        ? {
+            quote: {
+              amount: l.assetQuote.amount,
+              asset: Number(l.assetQuote.asset),
+              decimals: l.assetQuote.extra.decimals,
+              ...(l.assetQuote.extra.symbol ? { symbol: l.assetQuote.extra.symbol } : {}),
+            },
+          }
+        : {}),
       status: res.statusCode,
       ms,
       at: new Date().toISOString(),
@@ -490,12 +704,15 @@ function finishRequest(
  *  any status >= 400 CANCELS settlement, so throwing must not be silent. */
 async function runHandler(e: EndpointDef, req: Request, res: Response) {
   const logs: { message: string; data?: Record<string, unknown> }[] = [];
+  const stream = e.stream ? openStream(res) : null;
   const ctx: HandlerContext = {
     body: req.body ?? {},
     headers: req.headers as Record<string, string | undefined>,
     query: req.query as Record<string, unknown>,
     log: (message, data) => logs.push({ message, data }),
     payment: readPaymentResponse(res),
+    traceId: locals(res).trace?.traceId,
+    ...(stream ? { write: stream.write } : {}),
   };
 
   const timeout = e.timeout ?? 30_000;
@@ -511,24 +728,89 @@ async function runHandler(e: EndpointDef, req: Request, res: Response) {
         );
       }),
     ]);
-    res.json(result);
+    if (stream) {
+      // A returned value still becomes a frame, so `return { done: true }` at
+      // the end of a streaming handler does the obvious thing instead of being
+      // silently dropped.
+      if (result !== undefined) stream.write(result, { event: "result" });
+      stream.end();
+    } else {
+      res.json(result);
+    }
   } catch (err) {
     const e2 = err as RiparError;
     const status = e2.status ?? 500;
-    // Any status >= 400 cancels settlement — @x402/express buffers the response
-    // and only settles on success, so a failed call is never charged rather
-    // than charged and refunded. Nothing is taken, which is a stronger promise
-    // than a refund and depends entirely on not dressing a failure as a 200.
-    res.status(status).json({
+    const body = {
       error: {
         code: e2.code ?? "handler_error",
         message: e2.message ?? "The handler threw.",
         logs: logs.slice(-20),
       },
-    });
+    };
+    // A stream that has already emitted a frame cannot go back and become a
+    // 4xx: the status line is chosen before the first byte, and on the ungated
+    // path those bytes are already with the caller. So the failure travels as
+    // an `error` event and the call is CHARGED — the caller received part of
+    // what they paid for, and pretending otherwise would mean either lying
+    // about the status or refusing to deliver what did succeed. A handler that
+    // fails before its first frame still gets the ordinary 5xx, and settlement
+    // is still cancelled.
+    if (stream?.started) {
+      stream.write(body.error, { event: "error" });
+      stream.end();
+    } else {
+      // Any status >= 400 cancels settlement — @x402/express buffers the
+      // response and only settles on success, so a failed call is never charged
+      // rather than charged and refunded. Nothing is taken, which is a stronger
+      // promise than a refund and depends entirely on not dressing a failure as
+      // a 200.
+      res.status(status).json(body);
+    }
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * The SSE writer handed to a `stream: true` handler.
+ *
+ * `delivery` is decided by whether this request went through the payment gate,
+ * which is the only thing that determines it: the gate replaces `res.write`
+ * with a buffer, and a request the gate waved past (a live subscription window,
+ * a free-tier call) still has the real one. Published in `x-ripar-stream` so a
+ * client can tell what it is holding rather than infer it from timing.
+ */
+function openStream(res: Response) {
+  const l = locals(res);
+  const delivery: StreamDelivery =
+    l.coveredBySubscription || l.freeFor !== undefined ? "incremental" : "buffered-until-settlement";
+  let started = false;
+
+  const begin = () => {
+    if (started) return;
+    started = true;
+    for (const [k, v] of Object.entries(SSE_HEADERS)) res.setHeader(k, v);
+    res.setHeader(STREAM_HEADER, delivery);
+    // Sends the header block now on the incremental path, so a client's
+    // connection callback fires before the first frame rather than with it.
+    // Buffered, this is recorded alongside the writes and replayed with them.
+    res.flushHeaders();
+  };
+
+  return {
+    get started() {
+      return started;
+    },
+    delivery,
+    write: (data: unknown, opts?: { event?: string; id?: string; retry?: number }) => {
+      begin();
+      res.write(sseFrame(data, opts));
+    },
+    end: () => {
+      begin();
+      res.end();
+    },
+  };
 }
 
 /** The middleware writes settlement details to a response header once it has
@@ -578,40 +860,120 @@ function publicOrigin(req: Request) {
   return `${proto}://${host}`;
 }
 
+/**
+ * Everything an embedder needs about a running agent, without reaching into
+ * Express or Node's Server.
+ *
+ * `address` is the Algorand address settlement goes to — in an agent SDK that
+ * is what the word means, and it is the field a supervisor needs to check that
+ * the process it just started is paying the account it expected. It lives HERE,
+ * on a nested handle, rather than flat on the returned server, for a reason
+ * that is not stylistic: `Server.address()` is a method, and shadowing it with
+ * a string would break every existing caller that reads the bound port that way
+ * — including this repo's own shutdown test. `port` and `url` give you what
+ * `address()` was being used for anyway.
+ */
+export type RiparHandle = {
+  /** Origin the agent actually answers on, with the real port when 0 was asked
+   *  for. */
+  url: string;
+  port: number;
+  /** The Algorand address settlement goes to. */
+  address: string;
+  metrics: Metrics;
+  runs: RunRecorder;
+  /** Stop listening, drain what is in flight, and resolve with the outcome. */
+  close: (reason?: string) => Promise<ShutdownResult>;
+};
+
 /** The listening server, plus the drain SIGTERM would trigger — exposed so an
  *  embedder can shut the agent down on their own terms. */
 export type RiparServer = Server & {
   shutdown: (reason?: string) => Promise<ShutdownResult>;
   /** Detach the signal handlers, for a process that starts several agents. */
   uninstallSignals: () => void;
+  /** The typed handle. Also spread flat below, minus `address` — see the note
+   *  on RiparHandle for why that one cannot be flat. */
+  handle: RiparHandle;
+  url: string;
+  port: number;
+  metrics: Metrics;
+  runs: RunRecorder;
 };
 
 /** Build the server and listen. Returns the http.Server so tests can close it. */
 export async function serve(agent: AgentDef, opts: ServeOptions = {}): Promise<RiparServer> {
   const app = await createServer(agent, opts);
-  const port = opts.port ?? Number(process.env.PORT ?? 4021);
+  const wanted = opts.port ?? Number(process.env.PORT ?? 4021);
   const network: Network = opts.network ?? agent.network ?? "mainnet";
-  const server = app.listen(port, () => {
-    const routes = agent.endpoints.map(
-      (e) => `${e.method ?? "POST"} /${e.name}  ${typeof e.price === "function" ? (e.priceHint ?? "dynamic") : e.price}`
-    );
-    opts.onReady?.({ port, routes, network });
-    if (!opts.onReady) {
-      console.log(`ripar · ${agent.handle} on :${port} (${network})`);
-      for (const r of routes) console.log(`  ${r}`);
-      console.log(`  GET /.well-known/ripar.json`);
-      console.log(`  GET /metrics · GET /_ripar/runs · GET /health   (unpaid)`);
-    }
+  const runtime = runtimeOf(app)!;
+
+  const server = app.listen(wanted);
+  // Awaited rather than assumed. `listen` binds before it emits, so reading the
+  // port synchronously usually works — but a port already in use emits `error`
+  // instead, and without this that surfaces as an uncaught exception long after
+  // `serve()` resolved, with nothing tying it to the call that caused it.
+  await new Promise<void>((resolve, reject) => {
+    server.once("listening", resolve);
+    server.once("error", reject);
   });
 
-  const { shutdown, uninstall } = installShutdown(server, runtimeOf(app)!, {
+  const port = (server.address() as AddressInfo | null)?.port ?? wanted;
+  // A wildcard bind is not a hostname anything can connect to; the loopback
+  // address is, and is what a health check or a test needs.
+  const host = hostOf(server.address());
+  const url = `http://${host}:${port}`;
+
+  const routes = agent.endpoints.map(
+    (e) => `${e.method ?? "POST"} /${e.name}  ${priceSummary(e)}`
+  );
+  opts.onReady?.({ port, routes, network });
+  if (!opts.onReady) {
+    console.log(`ripar · ${agent.handle} on :${port} (${network})`);
+    for (const r of routes) console.log(`  ${r}`);
+    console.log(`  GET /.well-known/ripar.json`);
+    console.log(`  GET /metrics · GET /_ripar/runs · GET /health   (unpaid)`);
+  }
+
+  const { shutdown, uninstall } = installShutdown(server, runtime, {
     timeoutMs: opts.shutdownTimeoutMs,
     // No signals means the drain is still available, just not triggered for you.
     signals: opts.handleSignals === false ? [] : undefined,
     onExit: opts.onShutdown,
   });
 
-  return Object.assign(server, { shutdown, uninstallSignals: uninstall });
+  const handle: RiparHandle = {
+    url,
+    port,
+    address: opts.payTo ?? agent.payTo,
+    metrics: runtime.metrics,
+    runs: runtime.runs,
+    close: (reason = "close") => shutdown(reason),
+  };
+
+  return Object.assign(server, {
+    shutdown,
+    uninstallSignals: uninstall,
+    handle,
+    url,
+    port,
+    metrics: runtime.metrics,
+    runs: runtime.runs,
+  });
+}
+
+function hostOf(address: ReturnType<Server["address"]>): string {
+  if (!address || typeof address === "string") return "127.0.0.1";
+  if (address.address === "::" || address.address === "0.0.0.0" || !address.address) return "127.0.0.1";
+  return address.family === "IPv6" ? `[${address.address}]` : address.address;
+}
+
+/** What the startup banner shows for one endpoint. */
+function priceSummary(e: EndpointDef): string {
+  if (e.subscription) return `${e.subscription.price} / ${String(e.subscription.period)}`;
+  if (typeof e.price === "function") return e.priceHint ?? "dynamic";
+  if (isAssetPrice(e.price)) return `${e.price.amount} ${e.price.symbol ?? `ASA ${e.price.asset}`}`;
+  return String(e.price);
 }
 
 export { manifest };

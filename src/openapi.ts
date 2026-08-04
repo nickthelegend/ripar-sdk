@@ -1,4 +1,4 @@
-import { normalizePrice } from "./pricing.js";
+import { isAssetPrice, normalizePrice } from "./pricing.js";
 import type { AgentDef, EndpointDef, InputSchema } from "./types.js";
 
 /**
@@ -47,6 +47,12 @@ function priceOf(e: EndpointDef): { price: string; kind: string; period?: string
     // saying "dynamic", beats publishing a number nobody would honour.
     return { price: e.priceHint ?? "dynamic", kind: "dynamic" };
   }
+  if (isAssetPrice(e.price)) {
+    // Never dressed with a "$": the amount is that many units of one specific
+    // ASA, and a dollar sign in front of it is a number a reader will budget
+    // against and a rate nobody quoted.
+    return { price: `${e.price.amount} ${e.price.symbol ?? `ASA ${e.price.asset}`}`, kind: "asset" };
+  }
   return { price: normalizePrice(e.price, e.name), kind: "fixed" };
 }
 
@@ -63,11 +69,49 @@ export function openApiDocument(agent: AgentDef, opts: OpenApiOptions = {}): Rec
       operationId: e.name.replace(/[^a-zA-Z0-9]+/g, "_"),
       summary: e.description ?? e.name,
       tags: e.tags?.length ? e.tags : undefined,
-      "x-ripar-price": { amount: price, pricing: kind, ...(period ? { period } : {}) },
+      // OpenAPI's own field, so every generator already marks the method
+      // obsolete without knowing anything about x-ripar extensions.
+      ...(e.deprecated ? { deprecated: true } : {}),
+      "x-ripar-price": {
+        amount: price,
+        pricing: kind,
+        ...(period ? { period } : {}),
+        ...(isAssetPrice(e.price)
+          ? { asset: { id: Number(e.price.asset), decimals: e.price.decimals, symbol: e.price.symbol } }
+          : {}),
+      },
+      ...(e.sunset ? { "x-ripar-sunset": new Date(e.sunset).toISOString() } : {}),
       responses: {
-        "200": {
-          description: "The work, once payment settled.",
-          content: { "application/json": { schema: { type: "object" } } },
+        "200": e.stream
+          ? {
+              description:
+                "The work, once payment settled — as text/event-stream. Behind the payment gate the " +
+                "frames are produced together and flushed after settlement, because @x402/express " +
+                "buffers the response body to decide whether to settle at all. `x-ripar-stream` says " +
+                "which of the two this response was.",
+              headers: {
+                "x-ripar-stream": {
+                  description: "`incremental` or `buffered-until-settlement`.",
+                  schema: { type: "string", enum: ["incremental", "buffered-until-settlement"] },
+                },
+              },
+              content: { "text/event-stream": { schema: { type: "string" } } },
+            }
+          : {
+              description: "The work, once payment settled.",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+        ...(e.maxBodyBytes
+          ? {
+              "413": {
+                description: `The request body exceeded ${e.maxBodyBytes} bytes. Checked before the payment gate, so nothing was charged.`,
+              },
+            }
+          : {}),
+        "503": {
+          description:
+            "The payment layer could not be reached — the endpoint itself is fine. Retry-After says when to come back.",
+          headers: { "Retry-After": { schema: { type: "integer" } } },
         },
         "400": {
           description:

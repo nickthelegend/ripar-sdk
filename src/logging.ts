@@ -129,6 +129,7 @@ export function requestLine(args: {
   txId?: string;
   payer?: string;
   requestId?: string;
+  traceId?: string;
 }): Record<string, unknown> {
   return {
     endpoint: args.endpoint,
@@ -142,5 +143,9 @@ export function requestLine(args: {
     // the only field that makes per-caller debugging possible.
     ...(args.payer ? { payer: args.payer } : {}),
     ...(args.requestId ? { requestId: args.requestId } : {}),
+    // W3C trace id, which is what joins this line to the caller's logs and to
+    // every agent this handler called in turn. Without it a paid chain is four
+    // sets of logs on four machines with nothing in common.
+    ...(args.traceId ? { traceId: args.traceId } : {}),
   };
 }

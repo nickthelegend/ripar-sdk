@@ -21,9 +21,21 @@ import type { EndpointDef } from "./types.js";
 /** Which paths a guard applies to. Everything else passes straight through. */
 export type Applies = (path: string) => boolean;
 
-export function rateLimitGuard(limiter: RateLimiter, applies: Applies): RequestHandler {
+/**
+ * @param limiter One limiter for every gated route, or a function picking the
+ *   limiter for a path — which is how a single expensive endpoint gets a
+ *   tighter cap without forcing that cap on every cheap one. Returning
+ *   undefined leaves that path unlimited.
+ */
+export function rateLimitGuard(
+  limiter: RateLimiter | ((path: string) => RateLimiter | undefined),
+  applies: Applies
+): RequestHandler {
+  const pick = typeof limiter === "function" ? limiter : () => limiter;
   return (req: Request, res: Response, next: NextFunction) => {
     if (!applies(req.path)) return next();
+    const limiter = pick(req.path);
+    if (!limiter) return next();
 
     const payer = payerFromPaymentHeader(readPaymentHeader((n) => req.header(n)));
     // In payer mode an unpaid probe has nobody to charge the hit to, and cannot
@@ -47,6 +59,65 @@ export function rateLimitGuard(limiter: RateLimiter, applies: Applies): RequestH
       },
     });
   };
+}
+
+/**
+ * Refuses an oversized body for one endpoint before anything reads it.
+ *
+ * Mounted in front of `express.json`, which is the only position that makes it
+ * free: past that point the bytes are already in memory, and past the payment
+ * gate the caller has been charged for a request the handler will refuse. The
+ * global `express.json({ limit })` stays as the backstop for everything without
+ * its own cap, and for a caller who lies about Content-Length — this can only
+ * read what the client declared, so `bodyLimitVerify` measures what actually
+ * arrived.
+ *
+ * 413 rather than 400: a caller that gets "too large" can split the work, and a
+ * caller that gets "bad request" goes looking at its JSON.
+ */
+export function bodyLimitGuard(limitFor: (path: string) => number | undefined): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const limit = limitFor(req.path);
+    if (!limit) return next();
+    const declared = Number(req.headers["content-length"]);
+    if (!Number.isFinite(declared) || declared <= limit) return next();
+    tooLarge(res, declared, limit);
+  };
+}
+
+/**
+ * The same cap, measured on the bytes that arrived rather than the ones the
+ * caller announced.
+ *
+ * Handed to `express.json({ verify })`, which runs after the body is read and
+ * before it is parsed. A chunked request sends no Content-Length at all, so
+ * without this the header check is trivially avoidable by omitting it.
+ */
+export function bodyLimitVerify(limitFor: (path: string) => number | undefined) {
+  return (req: Request, _res: Response, buf: Buffer) => {
+    const limit = limitFor(req.path);
+    if (limit && buf.length > limit) {
+      throw Object.assign(new Error(`Body is ${buf.length} bytes; this endpoint accepts ${limit}.`), {
+        status: 413,
+        statusCode: 413,
+        // Read by the error handler in server.ts, which turns this into the
+        // same JSON shape the header check produces. body-parser wraps whatever
+        // is thrown here, so the marker has to survive being re-created.
+        type: "entity.too.large",
+        ripar: { limit, size: buf.length },
+      });
+    }
+  };
+}
+
+export function tooLarge(res: Response, size: number, limit: number) {
+  res.status(413).json({
+    error: {
+      code: "body_too_large",
+      message: `Request body is ${size} bytes; this endpoint accepts ${limit}. Checked before the payment gate, so nothing was charged.`,
+      limit,
+    },
+  });
 }
 
 export function idempotencyGuard(store: IdempotencyStore, applies: Applies): RequestHandler {

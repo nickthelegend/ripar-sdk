@@ -137,6 +137,13 @@ export function atomicToUsd(
 }
 
 function decimalsFor(asset?: string, extra?: Record<string, unknown>): number | null {
+  // A quote that says outright it is not denominated in dollars is not
+  // convertible to dollars by dividing it. `decimals` turns 1500000 into 1.5,
+  // and 1.5 of some ASA is not $1.50 — nothing here knows what that asset is
+  // worth, and a client comparing the number against a dollar cap would let
+  // through a quote worth a hundred times its limit. Refusing is what makes a
+  // cap fail closed on an asset it cannot price.
+  if (extra?.["usd"] === false) return null;
   const declared = Number(extra?.["decimals"]);
   if (Number.isInteger(declared) && declared >= 0 && declared <= 18) return declared;
   if (!asset) return null;
