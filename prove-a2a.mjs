@@ -82,8 +82,23 @@ try {
     .getApplicationBoxByName(ext.registry.reputationApp, new Uint8Array([...Buffer.from("sc_"), ...scoreBox]))
     .do();
   const v = Buffer.from(s.value);
-  score = { jobsPaid: Number(v.readBigUInt64BE(0)), totalPaid: Number(v.readBigUInt64BE(8)) };
-  console.log("   jobs paid:", score.jobsPaid, "| total:", score.totalPaid / 1e6);
+  // Score is seven uint64s: agent_id, jobs_paid, volume_micro, validated,
+  // disputed, first_at, last_at. Reading from offset 0 takes the AGENT ID as
+  // the payment count — which printed "1" here and looked right, because this
+  // agent's id is also 1. The volume then came from jobs_paid and rendered as
+  // 0.000001. Two wrong numbers that both looked plausible.
+  score = {
+    agentId: Number(v.readBigUInt64BE(0)),
+    jobsPaid: Number(v.readBigUInt64BE(8)),
+    volumeMicro: Number(v.readBigUInt64BE(16)),
+    validated: Number(v.readBigUInt64BE(24)),
+    disputed: Number(v.readBigUInt64BE(32)),
+  };
+  console.log(
+    "   jobs paid:", score.jobsPaid,
+    "| volume:", (score.volumeMicro / 1e6).toFixed(6),
+    "| validated/disputed:", `${score.validated}/${score.disputed}`
+  );
 } catch {
   console.log("   no score box: nobody has paid this agent yet");
 }
