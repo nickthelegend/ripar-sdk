@@ -30,4 +30,11 @@ const agent = defineAgent({
   endpoints: [summarize],
 });
 
-await serve(agent, { port: Number(process.env.PORT ?? 4021) });
+await serve(agent, {
+  port: Number(process.env.PORT ?? 4021),
+  rateLimit: { perMinute: 60, per: "payer" },
+  idempotency: { windowMs: 10 * 60_000 },
+  // Containers get SIGTERM on every deploy. A paid call killed mid-flight has
+  // already settled, so the caller pays and gets a dropped connection.
+  shutdownTimeoutMs: 20_000,
+});

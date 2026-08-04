@@ -3,4 +3,6 @@ dist
 test
 .git
 *.md
+# …except the ones under templates/, which are part of what `ripar init` writes.
+!templates/**/*.md
 .env*

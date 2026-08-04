@@ -65,7 +65,11 @@ export function manifest(agent: AgentDef, baseUrl: string) {
         description: e.description,
         url: `${baseUrl.replace(/\/$/, "")}/${e.name}`,
         method: e.method,
-        price: e.price,
+        // A price function cannot be serialised, so discovery says so plainly
+        // and shows the author's hint. Publishing a made-up number here would
+        // be worse than publishing none: an agent would budget against it.
+        price: typeof e.price === "function" ? (e.priceHint ?? "dynamic") : e.price,
+        pricing: typeof e.price === "function" ? "dynamic" : "fixed",
         input: e.input,
         tags: e.tags,
       })),
@@ -105,7 +109,10 @@ function assertAddress(addr: string) {
   }
 }
 
-function assertPrice(price: string) {
+function assertPrice(price: unknown) {
+  // A price function is quoted per request, so there is nothing to check until
+  // one arrives — resolvePrice validates whatever it returns, at that point.
+  if (typeof price === "function") return;
   if (!/^\$?\d+(\.\d+)?$/.test(String(price))) {
     throw new RiparError(
       `Price "${price}" must look like "$0.01" — a USD amount the facilitator converts to the asset's base units.`,

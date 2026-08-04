@@ -14,6 +14,9 @@ COPY package.json ./
 RUN npm install --omit=dev --omit=optional --no-audit --no-fund
 COPY --from=build /app/dist ./dist
 COPY examples ./examples
+# Matches the `files` list in package.json, so `ripar init` works in the
+# container exactly as it does from npm rather than failing on a missing dir.
+COPY templates ./templates
 
 # Never run the agent as root; a handler is arbitrary code by design.
 RUN addgroup -S ripar && adduser -S ripar -G ripar

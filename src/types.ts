@@ -47,24 +47,41 @@ export type HandlerContext<B = unknown> = {
   query: Record<string, unknown>;
   /** Written to the execution record for this request. */
   log: (message: string, data?: Record<string, unknown>) => void;
-  /** Present once payment has been verified and settled. */
-  payment?: { txId?: string; payer?: string; amount: string; asset: string };
+  /** Present once payment has been verified and settled. `amount` is atomic
+   *  units of `asset` — `usd` is that converted, when the decimals are known. */
+  payment?: { txId?: string; payer?: string; amount: string; usd?: number; asset: string };
 };
 
 export type Handler<B = any, R = unknown> = (ctx: HandlerContext<B>) => R | Promise<R>;
 
+/** What a price function is handed. Deliberately narrower than HandlerContext:
+ *  pricing must be decidable from the request alone, before anything runs. */
+export type PriceContext<B = any> = {
+  body: B;
+  query: Record<string, unknown>;
+  header: (name: string) => string | undefined;
+};
+
+/** Quoted per request, so a big job can cost more than a small one. Returns the
+ *  same "$0.01" string a fixed price uses. */
+export type PriceFn<B = any> = (ctx: PriceContext<B>) => string | Promise<string>;
+
 /**
  * Price is a USD-denominated string ("$0.01") because that is what the x402
  * `accepts` block takes; the facilitator converts to the asset's base units.
+ * A function is evaluated per request and quoted in that request's 402.
  */
-export type Price = string;
+export type Price<B = any> = string | PriceFn<B>;
 
 export type EndpointDef<B = any, R = unknown> = {
   /** URL segment and discovery name. Lowercase, slash-separated. */
   name: string;
   /** One line a stranger's agent can use to decide whether this is what it needs. */
   description?: string;
-  price: Price;
+  price: Price<B>;
+  /** What discovery shows when `price` is a function — a range or a formula, so
+   *  a browsing agent still learns roughly what it will pay. */
+  priceHint?: string;
   method?: "GET" | "POST";
   input?: InputSchema;
   /** Milliseconds before the call is abandoned and the caller refunded. */
@@ -91,6 +108,39 @@ export type AgentDef = {
   bidsOn?: string[];
 };
 
+/**
+ * Caps how often one caller may invoke paid endpoints.
+ *
+ * `per: "payer"` keys on the Algorand address inside the X-PAYMENT header, so a
+ * caller cannot escape the limit by changing IP; requests with no payment header
+ * carry no payer and are neither counted nor limited — they cannot reach a
+ * handler anyway. `per: "ip"` keys on the socket address and counts every
+ * request to a paid route, which is the mode that stops a flood from one host.
+ */
+export type RateLimitOptions = {
+  perMinute: number;
+  per?: "payer" | "ip";
+};
+
+/** Replay protection for callers that retry. A cached response is returned
+ *  without re-entering the payment middleware, so a retry is never charged. */
+export type IdempotencyOptions = {
+  /** How long a completed response stays replayable. Default 10 minutes. */
+  windowMs?: number;
+  /** Cap on stored responses; oldest evicted first. Default 500. */
+  max?: number;
+};
+
+/** One line of the execution record served at GET /_ripar/runs. */
+export type RunRecord = {
+  id: string;
+  endpoint: string;
+  status: number;
+  ms: number;
+  txId?: string;
+  at: string;
+};
+
 export type ServeOptions = {
   port?: number;
   /** Defaults to the GoPlausible facilitator, which sponsors network fees. */
@@ -99,6 +149,18 @@ export type ServeOptions = {
   payTo?: string;
   /** Mount prefix for every endpoint. */
   basePath?: string;
+  rateLimit?: RateLimitOptions;
+  /** Enabled by passing an object; omitted means retries re-run and re-pay. */
+  idempotency?: IdempotencyOptions;
+  /** Size of the ring buffer behind GET /_ripar/runs. Default 100. */
+  runsCapacity?: number;
+  /** Milliseconds SIGTERM waits for in-flight work before killing sockets. */
+  shutdownTimeoutMs?: number;
+  /** Register SIGTERM/SIGINT handlers in `serve()`. Default true. */
+  handleSignals?: boolean;
+  /** Called once draining finishes. Defaults to exiting the process — override
+   *  it when the agent is embedded in something that owns its own lifecycle. */
+  onShutdown?: (result: { reason: string; outcome: "drained" | "timeout"; abandoned: number; ms: number }) => void;
   /** Called once the server is listening. */
   onReady?: (info: { port: number; routes: string[]; network: Network }) => void;
 };

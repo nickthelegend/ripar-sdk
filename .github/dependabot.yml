@@ -1,0 +1,48 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    # One PR a week for the safe half of the tree. Six repos each opening a
+    # dozen single-dependency PRs is how a small team stops reading any of
+    # them. Majors are deliberately NOT grouped: that is where the breaking
+    # change lives, and it earns its own diff and its own CI run.
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: deps
+      prefix-development: deps-dev
+    labels:
+      - dependencies
+
+  # Pinned action versions rot quietly: a v4 three releases behind keeps
+  # working right up until the runner image drops the Node it shipped with.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Etc/UTC
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+# Dependabot commits as dependabot[bot], which is not a member of the Vercel
+# team — so its branches produce a BLOCKED preview deployment with no build
+# logs. CI here still runs and is the real signal; see CONTRIBUTING.md.

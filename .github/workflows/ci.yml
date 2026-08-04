@@ -1,0 +1,73 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push makes the older run's answer worthless, so stop paying for it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing here publishes anything. Read-only is the entire requirement.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: typecheck + build + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` and not `npm install`: it fails when package.json and the
+      # lockfile disagree, which is one of the few classes of breakage a local
+      # run will happily paper over and a published package will not.
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # This package ships dist/, so a build failure here is a broken release,
+      # not a broken preview.
+      - name: Build
+        run: npm run build
+
+      # tsconfig excludes test/, so the suite is the only thing that typechecks
+      # the tests — and the only thing that proves an unpaid call still gets a
+      # 402 with the handler never reached.
+      #
+      # test/mainnet.test.ts is excluded here and runs in its own job below.
+      # The two default excludes are restated because passing --exclude on the
+      # CLI replaces the config's list rather than adding to it, and dropping
+      # them lets vitest wander into node_modules.
+      - name: Test
+        run: npx vitest run --exclude '**/node_modules/**' --exclude '**/dist/**' --exclude 'test/mainnet.test.ts'
+
+  # test/mainnet.test.ts negotiates against GoPlausible's live facilitator over
+  # the public internet. It is a real test and it runs on every PR, but a
+  # third-party outage is not a defect in this repo — so it reports as its own
+  # job instead of blocking a merge. It still turns red, and red still means
+  # go and look. Do not make the job above tolerant in the same way.
+  mainnet:
+    name: live facilitator (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Test against the live MainNet facilitator
+        run: npx vitest run test/mainnet.test.ts
