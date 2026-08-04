@@ -323,3 +323,74 @@ describe("subscriptions through createServer", () => {
     }
   });
 });
+
+/**
+ * Settlement observability, which the header-name bug silently disabled.
+ *
+ * readPaymentResponse looked for X-PAYMENT-RESPONSE while @x402/core emits
+ * PAYMENT-RESPONSE, so no receipt was ever found: ripar_settled_total and
+ * ripar_settled_usd_total sat at zero however much money moved, and no run
+ * recorded the transaction that paid for it. An operator watching those
+ * counters would have concluded the agent had never been paid.
+ */
+describe("settlement is actually observed", () => {
+  let base: string;
+  let close: () => Promise<void>;
+  let fac: Facilitator;
+
+  beforeAll(async () => {
+    fac = await startFacilitator();
+    const work = defineEndpoint({ name: "work", price: "$0.25", handler: () => ({ ok: true }) });
+    const agent = defineAgent({
+      name: "Metrics Agent",
+      handle: "metrics-agent",
+      payTo: PAY_TO,
+      network: "testnet",
+      endpoints: [work],
+    });
+    const app = await createServer(agent, {
+      network: "testnet",
+      payTo: PAY_TO,
+      facilitatorUrl: fac.url,
+    });
+    const server: Server = await new Promise((resolve) => {
+      const s = app.listen(0, () => resolve(s));
+    });
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    close = () => new Promise<void>((r) => server.close(() => r()));
+  });
+
+  afterAll(async () => {
+    await close();
+    await fac.close();
+  });
+
+  it("counts settled calls and USD, and records the txId on the run", async () => {
+    const accepted = await challengeFor(base, "/work");
+    for (let i = 0; i < 3; i++) {
+      const res = await fetch(`${base}/work`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "PAYMENT-SIGNATURE": paymentHeader(accepted) },
+        body: "{}",
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("payment-response"), "no receipt on the response").toBeTruthy();
+    }
+    // `finish` fires after the response is flushed; give the loop a turn.
+    await new Promise((r) => setTimeout(r, 80));
+
+    const metrics = await (await fetch(`${base}/metrics`)).text();
+    const value = (name: string) =>
+      Number(metrics.split("\n").find((l) => l.startsWith(name + " "))?.split(" ")[1]);
+
+    expect(value("ripar_settled_total"), "settlement counter never moved").toBe(3);
+    // The QUOTE is what is summed, not the receipt's amount — facilitators
+    // report base units on some networks and USD on others.
+    expect(value("ripar_settled_usd_total")).toBeCloseTo(0.75, 6);
+
+    const runs = (await (await fetch(`${base}/_ripar/runs`)).json()) as {
+      runs: { txId?: string }[];
+    };
+    expect(runs.runs.filter((r) => r.txId).length).toBe(3);
+  });
+});
