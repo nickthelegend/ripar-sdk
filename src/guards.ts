@@ -1,4 +1,5 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
+import { readPaymentHeader } from "./headers.js";
 import { payerFromPaymentHeader } from "./identity.js";
 import { IdempotencyStore } from "./idempotency.js";
 import type { RateLimiter } from "./ratelimit.js";
@@ -24,7 +25,7 @@ export function rateLimitGuard(limiter: RateLimiter, applies: Applies): RequestH
   return (req: Request, res: Response, next: NextFunction) => {
     if (!applies(req.path)) return next();
 
-    const payer = payerFromPaymentHeader(req.header("X-PAYMENT"));
+    const payer = payerFromPaymentHeader(readPaymentHeader((n) => req.header(n)));
     // In payer mode an unpaid probe has nobody to charge the hit to, and cannot
     // reach a handler either — counting it would make asking the price cost the
     // same as calling.
@@ -54,7 +55,7 @@ export function idempotencyGuard(store: IdempotencyStore, applies: Applies): Req
     const header = req.header("Idempotency-Key");
     if (!header) return next();
 
-    const identity = payerFromPaymentHeader(req.header("X-PAYMENT")) ?? clientIp(req);
+    const identity = payerFromPaymentHeader(readPaymentHeader((n) => req.header(n))) ?? clientIp(req);
     const key = IdempotencyStore.key(`${req.method} ${req.path}`, identity, header);
     const lookup = store.begin(key, IdempotencyStore.hashBody(req.body ?? {}));
 
@@ -126,7 +127,7 @@ export function validationGuard(byPath: Map<string, EndpointDef>): RequestHandle
     // they need travels in the 402 they are asking for. Attach a payment and
     // the same request is validated: nothing can be charged unvalidated, which
     // is the invariant that actually matters.
-    if (req.body === undefined && !req.header("X-PAYMENT")) return next();
+    if (req.body === undefined && !readPaymentHeader((n) => req.header(n))) return next();
 
     const failure = validateInput(endpoint.input, req.body ?? {});
     if (!failure) return next();

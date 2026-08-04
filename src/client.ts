@@ -145,7 +145,17 @@ export class RiparClient {
     // A held key means this call settles nothing, so the caps have nothing to
     // check. Quoting anyway would fetch the WINDOW's price — and a $5.00 window
     // against a $0.01 maxPrice would refuse a call that is in fact free.
-    const covered = this.subscriptions.has(canonical(url));
+    //
+    // But only a key we believe is still LIVE. A key we know has expired buys
+    // nothing, so skipping the caps on the strength of it would let the retry
+    // below settle the full window price with neither limit consulted — the
+    // exact runaway maxPrice exists to prevent. When the expiry is unknown
+    // (a key restored with useSubscription and no date) treat it as live and
+    // let the server be the judge; it will say `expired` and the key is
+    // dropped, so at worst one call is quoted without a cap check.
+    const key = this.subscriptions.get(canonical(url));
+    const covered = key != null && !isExpired(key);
+    if (key && !covered) this.subscriptions.delete(canonical(url));
 
     let quoted: number | null = null;
     if (!covered && (this.maxPrice != null || this.ledger)) {
@@ -174,15 +184,26 @@ export class RiparClient {
       // A held key turns this into a free call — the server checks it before
       // the payment gate, so the facilitator is never involved.
       const held = this.subscriptions.get(canonical(url));
+
+      // Re-check the cap on every attempt, not once before the loop. A retry
+      // re-signs and settles AGAIN: a 5xx refunds the caller, so paying twice
+      // is correct, but three attempts at $2 against a $5 daily cap must stop
+      // at two. Checking once let the total run past the limit the caller set.
+      if (attempt > 1 && quoted != null && !held) this.assertAffordable(quoted, undefined);
+
       try {
+        // `...init` FIRST. Spreading it after `headers` replaced the whole
+        // composed object with `init.headers`, dropping content-type and the
+        // subscription key — so passing any header at all made the call unpaid
+        // and the body unparsed.
         res = await this.paidFetch(url, {
           method: "POST",
+          ...init,
           headers: {
             "content-type": "application/json",
             ...(held ? { "x-ripar-subscription": held.value } : {}),
             ...(init.headers ?? {}),
           },
-          ...init,
           body: body != null ? JSON.stringify(body) : (init.body as BodyInit | undefined),
         });
       } catch (err) {
@@ -339,6 +360,14 @@ export type Subscription = {
   endpoint?: string;
   payment?: CallResult["payment"];
 };
+
+/** A key with a known expiry in the past. Unknown expiry counts as live —
+ *  see the note at the call site for why that is the safe direction. */
+function isExpired(k: StoredKey, now = Date.now()): boolean {
+  if (!k.expiresAt) return false;
+  const t = Date.parse(k.expiresAt);
+  return Number.isFinite(t) && t <= now;
+}
 
 /** Keys are scoped per endpoint URL. Query and hash do not change which
  *  endpoint is being called, so they must not split the cache and cause a

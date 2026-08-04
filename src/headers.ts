@@ -146,3 +146,25 @@ function decimalsFor(asset?: string, extra?: Record<string, unknown>): number | 
   if (id === USDC_ASSET_ID.mainnet || id === USDC_ASSET_ID.testnet) return 6;
   return null;
 }
+
+/**
+ * The header a caller attaches a signed payment to.
+ *
+ * x402 v2 calls it PAYMENT-SIGNATURE; v1 called it X-PAYMENT. @x402/core's
+ * extractPayment reads ONLY the v2 name, so that is what actually arrives —
+ * and any guard looking for X-PAYMENT alone sees nothing on every paid
+ * request. That is not a cosmetic mismatch: it made the payer rate limiter
+ * inert and let a paid request skip input validation.
+ *
+ * Both are accepted, v2 first, because @x402/next still falls back to v1.
+ */
+export const PAYMENT_HEADERS = ["payment-signature", "x-payment"] as const;
+
+/** Read the payment header from anything with a case-insensitive getter. */
+export function readPaymentHeader(get: (name: string) => string | undefined | null): string | undefined {
+  for (const name of PAYMENT_HEADERS) {
+    const v = get(name);
+    if (v) return v;
+  }
+  return undefined;
+}
