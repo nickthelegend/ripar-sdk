@@ -90,7 +90,8 @@ type EndpointBase<B = any, R = unknown> = {
   priceHint?: string;
   method?: "GET" | "POST";
   input?: InputSchema;
-  /** Milliseconds before the call is abandoned and the caller refunded. */
+  /** Milliseconds before the call is abandoned. A timeout is a 504, and any
+   *  status >= 400 cancels settlement, so an abandoned call is never charged. */
   timeout?: number;
   /** Publish to the discovery index. Private endpoints still take payment. */
   listed?: boolean;

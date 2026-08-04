@@ -12,7 +12,7 @@ import type { EndpointDef } from "./types.js";
  * They are middleware, and exported as middleware, because their position is
  * the feature: a request they reject has not reached x402 and therefore has not
  * been charged. Mounting them anywhere else — after the gate, or inside a
- * handler — makes each one a refund problem instead of a rejection.
+ * handler — makes each one a settled-payment problem instead of a rejection.
  *
  * `serve()` wires all three. They are separate exports for the case where Ripar
  * endpoints live inside a larger Express app that owns its own middleware order.

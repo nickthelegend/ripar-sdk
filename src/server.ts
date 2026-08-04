@@ -3,6 +3,7 @@ import express, { type Express, type Request, type Response } from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactAvmScheme } from "@x402/avm/exact/server";
 import { HTTPFacilitatorClient, type HTTPRequestContext } from "@x402/core/server";
+import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { manifest } from "./define.js";
 import { resolveFacilitatorNetwork } from "./network.js";
 import { idempotencyGuard, normalizePath, rateLimitGuard, validationGuard } from "./guards.js";
@@ -210,9 +211,29 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
       fixedUsd.set(e.name, usdOf(fixed));
       price = fixed;
     }
+    // Bazaar discovery, declared on the route where the facilitator actually
+    // reads it. registerWithBazaar() used to POST a manifest to
+    // <facilitator>/bazaar/register, which returns 404 — there is no such
+    // endpoint. The real mechanism is this extension: @x402/express loads
+    // bazaarResourceServerExtension when a route declares one, and the
+    // facilitator catalogues the resource while verifying a payment. So an
+    // endpoint becomes discoverable by being PAID FOR, not by announcing
+    // itself, which is the same rule the ReputationRegistry follows.
+    const discovery = e.listed
+      ? declareDiscoveryExtension({
+          input: exampleFor(e.input),
+          inputSchema: e.input
+            ? { properties: e.input.properties ?? {}, required: e.input.required ?? [] }
+            : undefined,
+          bodyType: "json",
+          output: { example: {} },
+        } as never)
+      : undefined;
+
     routes[`${e.method ?? "POST"} ${base}/${e.name}`] = {
       accepts: { scheme: "exact", network: networkId, payTo, price },
       description: e.description ?? e.name,
+      ...(discovery ? { extensions: discovery } : {}),
     };
   }
 
@@ -348,7 +369,7 @@ function finishRequest(
 }
 
 /** Runs the handler with a timeout, and maps failures onto x402's contract:
- *  a 5xx means the caller is refunded, so throwing must not be silent. */
+ *  any status >= 400 CANCELS settlement, so throwing must not be silent. */
 async function runHandler(e: EndpointDef, req: Request, res: Response) {
   const logs: { message: string; data?: Record<string, unknown> }[] = [];
   const ctx: HandlerContext = {
@@ -376,7 +397,10 @@ async function runHandler(e: EndpointDef, req: Request, res: Response) {
   } catch (err) {
     const e2 = err as RiparError;
     const status = e2.status ?? 500;
-    // 5xx is the signal that refunds the caller. Never dress a failure as 200.
+    // Any status >= 400 cancels settlement — @x402/express buffers the response
+    // and only settles on success, so a failed call is never charged rather
+    // than charged and refunded. Nothing is taken, which is a stronger promise
+    // than a refund and depends entirely on not dressing a failure as a 200.
     res.status(status).json({
       error: {
         code: e2.code ?? "handler_error",
@@ -473,3 +497,27 @@ export async function serve(agent: AgentDef, opts: ServeOptions = {}): Promise<R
 }
 
 export { manifest };
+
+/**
+ * A minimal example body from an input schema, for Bazaar discovery.
+ *
+ * The catalogue shows callers what a request looks like. Deriving it from the
+ * schema the endpoint already declares means the example cannot drift from
+ * what validation will actually accept — a hand-written example is a second
+ * source of truth that goes stale silently.
+ */
+function exampleFor(input: EndpointDef["input"]): Record<string, unknown> {
+  if (!input?.properties) return {};
+  const out: Record<string, unknown> = {};
+  for (const name of input.required ?? Object.keys(input.properties)) {
+    const spec = (input.properties as Record<string, { type?: string; enum?: unknown[] }>)[name];
+    if (!spec) continue;
+    if (spec.enum?.length) out[name] = spec.enum[0];
+    else if (spec.type === "number" || spec.type === "integer") out[name] = 1;
+    else if (spec.type === "boolean") out[name] = true;
+    else if (spec.type === "array") out[name] = [];
+    else if (spec.type === "object") out[name] = {};
+    else out[name] = "example";
+  }
+  return out;
+}

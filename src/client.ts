@@ -186,8 +186,9 @@ export class RiparClient {
       const held = this.subscriptions.get(canonical(url));
 
       // Re-check the cap on every attempt, not once before the loop. A retry
-      // re-signs and settles AGAIN: a 5xx refunds the caller, so paying twice
-      // is correct, but three attempts at $2 against a $5 daily cap must stop
+      // re-signs and settles AGAIN. A 5xx cancels settlement rather than
+      // refunding, so the failed attempt cost nothing and paying on the retry
+      // is correct — but three attempts at $2 against a $5 daily cap must stop
       // at two. Checking once let the total run past the limit the caller set.
       if (attempt > 1 && quoted != null && !held) this.assertAffordable(quoted, undefined);
 

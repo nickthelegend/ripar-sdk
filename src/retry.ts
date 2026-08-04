@@ -17,7 +17,7 @@ export const DEFAULT_RETRY: Required<RetryOptions> = { attempts: 3, baseMs: 250,
  * wrong and will be wrong again; a 409 means the idempotency key clashed.
  * Retrying any of them burns another quote at best and pays twice at worst.
  * 5xx and transport failures are the only cases where the same request might
- * genuinely succeed — and under x402 a 5xx refunded the caller, so the retry
+ * genuinely succeed — and under x402 a 5xx cancels settlement, so the retry
  * costs them nothing extra.
  *
  * 429 is excluded too: the server named a Retry-After, and hammering through it

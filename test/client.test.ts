@@ -3,7 +3,7 @@ import algosdk from "algosdk";
 import { RiparClient } from "../src/client.js";
 import { DEFAULT_RETRY, backoffDelay, isRetryable } from "../src/retry.js";
 import { SpendLedger } from "../src/spend.js";
-import { registerWithBazaar, DEFAULT_BAZAAR_URL } from "../src/bazaar.js";
+import { listBazaar, findInBazaar, DISCOVERY_URL } from "../src/bazaar.js";
 import { RiparError } from "../src/types.js";
 
 /** A throwaway wallet. It never signs anything real — these tests stop at the
@@ -347,93 +347,80 @@ describe("RiparClient spend caps", () => {
   });
 });
 
-/* ── 11. bazaar registration ────────────────────────────────────────────── */
+/* ── 11. the bazaar index ───────────────────────────────────────────────── */
 
-describe("registerWithBazaar", () => {
-  const manifest = { name: "Test Agent", handle: "test-agent", endpoints: [] };
+describe("listBazaar", () => {
+  // The index really answers in this shape; captured from
+  // GET https://facilitator.goplausible.xyz/discovery/resources?limit=1
+  const page = {
+    x402Version: 2,
+    items: [
+      {
+        id: "R0VUOmh0dHBz",
+        resourceUrl: "https://api.example.fun/insights/gas-oracle",
+        method: "GET",
+        description: "Priority fee oracle derived from recent samples.",
+        mimeType: "application/json",
+        accepts: [{ scheme: "exact", network: "algorand:SGO1", amount: "1000" }],
+      },
+    ],
+  };
 
-  it("posts the manifest it fetched", async () => {
-    const posted: { url: string; body: unknown }[] = [];
-    const impl = (async (url: string | URL, init?: RequestInit) => {
-      const u = String(url);
-      if (init?.method === "POST") {
-        posted.push({ url: u, body: JSON.parse(String(init.body)) });
-        return new Response(JSON.stringify({ ok: true }), { status: 201 });
-      }
-      return new Response(JSON.stringify(manifest), { status: 200 });
-    }) as unknown as typeof fetch;
+  it("reads the index and keeps the untouched record alongside the parse", async () => {
+    const impl = (async () =>
+      new Response(JSON.stringify(page), { status: 200 })) as unknown as typeof fetch;
+    const res = await listBazaar({ fetchImpl: impl });
 
-    const result = await registerWithBazaar("https://agent.test/.well-known/ripar.json", {
-      bazaarUrl: "https://bazaar.test/register",
-      fetchImpl: impl,
-    });
-
-    expect(result).toEqual({ ok: true, status: 201, bazaarUrl: "https://bazaar.test/register" });
-    expect(posted).toHaveLength(1);
-    expect(posted[0].body).toEqual({
-      manifestUrl: "https://agent.test/.well-known/ripar.json",
-      manifest,
-    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.resources).toHaveLength(1);
+    expect(res.resources[0].resourceUrl).toBe("https://api.example.fun/insights/gas-oracle");
+    expect(res.resources[0].accepts).toHaveLength(1);
+    // `raw` exists so a caller is never blocked by a field this parser has not
+    // learned about yet.
+    expect(res.resources[0].raw.mimeType).toBe("application/json");
   });
 
-  it("NEVER throws when the registry is down — discovery is not worth an outage", async () => {
+  it("NEVER throws when the index is down — discovery is not worth an outage", async () => {
     const impl = (async () => {
       throw new TypeError("fetch failed: ECONNREFUSED");
     }) as unknown as typeof fetch;
-
-    const result = await registerWithBazaar("https://agent.test/.well-known/ripar.json", {
-      bazaarUrl: "https://bazaar.test/register",
-      fetchImpl: impl,
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result).toMatchObject({ error: expect.stringContaining("ECONNREFUSED") });
+    const res = await listBazaar({ fetchImpl: impl });
+    expect(res.ok).toBe(false);
+    expect(res).toMatchObject({ error: expect.stringContaining("ECONNREFUSED") });
   });
 
-  it("reports a rejecting registry rather than crashing the agent", async () => {
-    const impl = (async (_url: string | URL, init?: RequestInit) =>
-      init?.method === "POST"
-        ? new Response("nope", { status: 503 })
-        : new Response(JSON.stringify(manifest), { status: 200 })) as unknown as typeof fetch;
-
-    const result = await registerWithBazaar("https://agent.test/.well-known/ripar.json", {
-      bazaarUrl: "https://bazaar.test/register",
-      fetchImpl: impl,
-    });
-    expect(result).toMatchObject({ ok: false, status: 503, error: "bazaar returned 503" });
+  it("reports a rejecting index rather than pretending it is empty", async () => {
+    // An empty list and a 503 mean very different things to a caller deciding
+    // whether anything is out there.
+    const impl = (async () => new Response("nope", { status: 503 })) as unknown as typeof fetch;
+    const res = await listBazaar({ fetchImpl: impl });
+    expect(res.ok).toBe(false);
+    expect(res).toMatchObject({ status: 503 });
   });
 
-  it("will not advertise a manifest URL that does not resolve", async () => {
-    let posts = 0;
-    const impl = (async (_url: string | URL, init?: RequestInit) => {
-      if (init?.method === "POST") posts++;
-      return new Response("not found", { status: 404 });
-    }) as unknown as typeof fetch;
-
-    const result = await registerWithBazaar("https://agent.test/.well-known/ripar.json", {
-      bazaarUrl: "https://bazaar.test/register",
-      fetchImpl: impl,
-    });
-
-    expect(result.ok).toBe(false);
-    expect(posts).toBe(0);
+  it("survives an index that answers with something unexpected", async () => {
+    const impl = (async () =>
+      new Response(JSON.stringify({ nonsense: true }), { status: 200 })) as unknown as typeof fetch;
+    const res = await listBazaar({ fetchImpl: impl });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.resources).toEqual([]);
   });
 
-  it("gives up on a hanging registry instead of holding boot open", async () => {
-    const impl = ((_url: string | URL, init?: RequestInit) =>
-      new Promise((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
-      })) as unknown as typeof fetch;
+  it("filters locally, because the index has no search route", async () => {
+    const impl = (async () =>
+      new Response(JSON.stringify(page), { status: 200 })) as unknown as typeof fetch;
 
-    const result = await registerWithBazaar("https://agent.test/.well-known/ripar.json", {
-      bazaarUrl: "https://bazaar.test/register",
-      timeoutMs: 30,
-      fetchImpl: impl,
-    });
-    expect(result.ok).toBe(false);
+    const hit = await findInBazaar("oracle", { fetchImpl: impl });
+    expect(hit.ok && hit.resources).toHaveLength(1);
+
+    const miss = await findInBazaar("nothing-like-this", { fetchImpl: impl });
+    expect(miss.ok && miss.resources).toHaveLength(0);
   });
 
-  it("defaults to the facilitator's index", () => {
-    expect(DEFAULT_BAZAAR_URL).toMatch(/^https:\/\/.+\/bazaar\/register$/);
+  it("points at the facilitator's real discovery path by default", () => {
+    // The old default was <facilitator>/bazaar/register, which 404s.
+    expect(DISCOVERY_URL).toMatch(/\/discovery\/resources$/);
   });
 });
+
