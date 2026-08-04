@@ -127,7 +127,11 @@ const unpaid = await fetch(`${ORIGIN}/a2a`, {
 });
 const unpaidBody = await unpaid.json();
 console.log("   status:", unpaid.status, "| rpc error:", unpaidBody.error?.code);
-check("an unpaid call is refused with a JSON-RPC error, not a bare 402", unpaidBody.error?.code === -32002);
+// -32010, not -32002. A2A assigns -32002 to TaskNotCancelable, so the
+// original choice collided with the spec the moment tasks/cancel became real.
+// -32010 sits outside A2A's -32001..-32006 and inside JSON-RPC's server-error
+// range, which is where an application-specific code belongs.
+check("an unpaid call is refused with a JSON-RPC error, not a bare 402", unpaidBody.error?.code === -32010);
 check("the refusal carries the x402 challenge", !!unpaidBody.error?.data?.requirements);
 
 const req = unpaidBody.error?.data?.requirements;
