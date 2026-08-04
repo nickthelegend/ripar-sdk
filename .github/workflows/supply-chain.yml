@@ -1,0 +1,152 @@
+name: supply-chain
+
+# Secrets, advisories, and a bill of materials — the three questions ci.yml
+# does not answer.
+#
+# Separate from ci.yml deliberately. An advisory published overnight turns this
+# red without anyone pushing anything, and folding that into the build job
+# makes "did my change break something?" unanswerable at a glance.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # A vulnerability disclosed today was in this tree yesterday. Nothing about
+  # that appears on a push, so the audit runs on a clock or it only ever
+  # reports what was already known the last time somebody typed.
+  schedule:
+    - cron: "23 5 * * *"
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Secrets.
+  #
+  # This repo matters most for this check. `ripar init` templates, the CLI's
+  # chain commands and register-agent.mjs all deal in Algorand accounts, and an
+  # Algorand mnemonic is the one credential shape a generic scanner cannot see:
+  # 25 lowercase words, no prefix, no entropy signature, indistinguishable from
+  # a sentence unless you check the words against BIP-39. The scanner does.
+  #
+  # It is checked out from ripar-contracts rather than copied here — four
+  # copies of a rule list is the same drift that has twice let a dead registry
+  # app id survive a sweep.
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: no secrets in the tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: fetch the scanner
+        uses: actions/checkout@v4
+        with:
+          repository: nickthelegend/ripar-contracts
+          path: tools
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: scan
+        run: node tools/scripts/scan-secrets.mjs repo
+
+  # ---------------------------------------------------------------------------
+  # 2. Dependencies.
+  #
+  # The production audit is the one that matters here: @ripar/sdk is a library,
+  # and `files` ships only dist/ and templates/, so a devDependency advisory is
+  # not something a consumer installs. It is still blocking, because a
+  # contributor's machine is a machine with the maintainer's TestNet keys on it.
+  #
+  # Both pass today. They did not on 2026-08-04: vitest ^2.1.9 carried
+  # GHSA-5xrq-8626-4rwp (critical) plus a vite path-traversal and two more
+  # through esbuild. `npm audit fix --force` wanted vitest 4, which made
+  # test/client-extras.test.ts fail intermittently — 6/6 clean runs on 2.x,
+  # failures in 4 of 5 runs on 4.x. vitest 3.2.7 clears every advisory and all
+  # 473 tests pass on it across 6 consecutive runs.
+  # ---------------------------------------------------------------------------
+  audit:
+    name: no high or critical advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: what a consumer of @ripar/sdk installs
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: what a contributor installs
+        run: npm audit --audit-level=high
+
+      - name: the full picture, for the log
+        if: always()
+        run: npm audit || true
+
+  # ---------------------------------------------------------------------------
+  # 3. SBOM.
+  #
+  # CycloneDX 1.6, uploaded as an artifact. This is a library other people build
+  # paid endpoints on: "what am I actually running in the process that holds my
+  # payout key" is a question its users are entitled to be able to answer
+  # without cloning the repo and reading a lockfile.
+  #
+  # Two of them, and the difference is the point: `runtime` is what a consumer
+  # inherits, `full` is what a contributor's machine ends up running.
+  # ---------------------------------------------------------------------------
+  sbom:
+    name: sbom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: runtime dependencies
+        run: >
+          npx --yes @cyclonedx/cyclonedx-npm@^4
+          --omit dev
+          --output-format JSON
+          --output-file sbom-runtime.cdx.json
+
+      - name: every dependency, including dev
+        run: >
+          npx --yes @cyclonedx/cyclonedx-npm@^4
+          --output-format JSON
+          --output-file sbom-full.cdx.json
+
+      - name: summarise
+        run: |
+          for f in sbom-runtime.cdx.json sbom-full.cdx.json; do
+            node -e "
+              const s = require('./$f');
+              console.log('$f', s.bomFormat, s.specVersion, '-', s.components.length, 'components');
+            "
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-ripar-sdk
+          path: sbom-*.cdx.json
+          if-no-files-found: error
