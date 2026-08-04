@@ -12,6 +12,15 @@ import { normalizePrice, resolvePrice, usdOf } from "./pricing.js";
 import { Runtime } from "./runtime.js";
 import { installShutdown, type ShutdownResult } from "./shutdown.js";
 import {
+  MemorySubscriptionStore,
+  checkSubscription,
+  issue,
+  parsePeriod,
+  readKey,
+  subscriptionHeaders,
+  type SubscriptionStore,
+} from "./subscriptions.js";
+import {
   DEFAULT_FACILITATOR,
   RiparError,
   USDC_ASSET_ID,
@@ -24,7 +33,12 @@ import {
 
 /** Everything a request accumulates on its way through the middleware stack.
  *  Express's `res.locals` is untyped, so this is where the shape is written. */
-type RiparLocals = { startedAt?: number };
+type RiparLocals = {
+  startedAt?: number;
+  /** Set when a valid subscription key let this request past the payment gate,
+   *  so the finish hook knows nothing settled and none was expected. */
+  coveredBySubscription?: boolean;
+};
 
 function locals(res: Response): RiparLocals {
   return (res.locals.ripar ??= {} as RiparLocals);
@@ -162,10 +176,25 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
 
   // Routes are keyed "METHOD /path" — only listed routes are gated, so the
   // unpaid routes above stay free by simply not appearing here.
+  // Endpoints that sell a window rather than a call. Periods are parsed here,
+  // at startup, so a malformed "30 days" is a boot failure rather than a key
+  // that silently never expires.
+  const subStore: SubscriptionStore = opts.subscriptions?.store ?? new MemorySubscriptionStore();
+  const subPeriods = new Map<string, number>();
+  for (const e of agent.endpoints) {
+    if (e.subscription) subPeriods.set(e.name, parsePeriod(e.subscription.period, e.name));
+  }
+
   const routes: Record<string, unknown> = {};
   for (const e of agent.endpoints) {
     let price: unknown;
-    if (typeof e.price === "function") {
+    if (e.subscription) {
+      // The 402 quotes the window, not the request. Everything downstream —
+      // the settled-USD counter, the receipt — then refers to the same number.
+      const fixed = normalizePrice(e.subscription.price, e.name);
+      fixedUsd.set(e.name, usdOf(fixed));
+      price = fixed;
+    } else if (typeof e.price === "function") {
       price = async (ctx: HTTPRequestContext) => {
         const pctx = priceContext(ctx);
         const quoted = await resolvePrice(e.price, e.name, pctx);
@@ -189,12 +218,68 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
   // runs against TestNet or MainNet purely from config.
   resourceServer.register("algorand:*", new ExactAvmScheme());
 
-  app.use(paymentMiddleware(routes as never, resourceServer));
+  const gate = paymentMiddleware(routes as never, resourceServer);
+
+  // A live subscription key skips the gate entirely. Placed here rather than
+  // inside the gate because the point of a window is that the second call
+  // costs nothing — it must not reach the facilitator at all.
+  app.use(async (req, res, next) => {
+    const endpoint = byPath.get(req.path);
+    if (!endpoint?.subscription) return gate(req, res, next);
+
+    let check;
+    try {
+      check = await checkSubscription(subStore, readKey(req.headers), endpoint.name);
+    } catch (err) {
+      // A store that is down must not hand out free calls. Fail closed: quote
+      // the window and let the caller pay again rather than serve for nothing.
+      check = { active: false, reason: "unknown" } as const;
+      res.setHeader("x-ripar-subscription-error", "store unavailable");
+    }
+
+    if (check.active) {
+      locals(res).coveredBySubscription = true;
+      for (const [k, v] of Object.entries(subscriptionHeaders(check.record))) res.setHeader(k, v);
+      res.setHeader("x-ripar-subscription-remaining-ms", String(check.remainingMs));
+      return next();
+    }
+
+    // Tell the caller why it is being asked to pay. "expired" and "unknown"
+    // look identical from the outside otherwise, and the first is something
+    // the caller can act on.
+    if (check.reason !== "none") res.setHeader("x-ripar-subscription-status", check.reason);
+    return gate(req, res, next);
+  });
 
   for (const e of agent.endpoints) {
     const path = `${base}/${e.name}`;
     const method = (e.method ?? "POST").toLowerCase() as "get" | "post";
-    app[method](path, (req, res) => runHandler(e, req, res));
+    app[method](path, async (req, res) => {
+      // Past the gate with a receipt and no active key means this settlement
+      // just bought a window. Mint before the handler runs so the key is on the
+      // response even if the handler throws — the caller paid for the window,
+      // not for the handler succeeding.
+      if (e.subscription && !locals(res).coveredBySubscription) {
+        const receipt = readPaymentResponse(res);
+        if (receipt) {
+          try {
+            const { key, record } = await issue(subStore, {
+              endpoint: e.name,
+              periodMs: subPeriods.get(e.name)!,
+              usd: fixedUsd.get(e.name) ?? 0,
+              payer: receipt.payer,
+              txId: receipt.txId,
+            });
+            for (const [k, v] of Object.entries(subscriptionHeaders(record, key))) res.setHeader(k, v);
+          } catch {
+            // The money is already settled, so refusing the call would take
+            // payment and give nothing. Serve it, and say the window was lost.
+            res.setHeader("x-ripar-subscription-error", "could not persist the subscription");
+          }
+        }
+      }
+      return runHandler(e, req, res);
+    });
   }
 
   app.use((_req, res) => {

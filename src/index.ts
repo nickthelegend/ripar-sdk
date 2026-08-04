@@ -18,6 +18,15 @@ export { Metrics, METRICS_CONTENT_TYPE } from "./metrics.js";
 export { RunRecorder } from "./runs.js";
 export { RateLimiter } from "./ratelimit.js";
 export { IdempotencyStore } from "./idempotency.js";
+export {
+  MemorySubscriptionStore,
+  checkSubscription,
+  parsePeriod,
+  mintKey,
+  hashKey,
+  readKey,
+} from "./subscriptions.js";
+export type { SubscriptionStore, SubscriptionRecord, SubscriptionCheck } from "./subscriptions.js";
 export { resolveFacilitatorNetwork, facilitatorSponsorsFees } from "./network.js";
 export {
   ALGORAND_MAINNET,

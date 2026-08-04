@@ -47,6 +47,10 @@ export class RiparClient {
   private readonly retry: RetryOptions | false;
   private readonly baseFetch: typeof fetch;
   private paidFetch?: typeof fetch;
+  /** Subscription keys, by endpoint URL. Held in memory only — a key is bearer
+   *  credentials for a window the caller already paid for, so writing it to disk
+   *  is the caller's decision, not ours. `activeSubscriptions` exposes them. */
+  private readonly subscriptions = new Map<string, StoredKey>();
 
   constructor(opts: ClientOptions = {}) {
     this.network = opts.network ?? "mainnet";
@@ -74,6 +78,21 @@ export class RiparClient {
       const client = new x402Client().register("algorand:*", new ExactAvmScheme(signer));
       this.paidFetch = wrapFetchWithPayment(this.baseFetch, client) as typeof fetch;
     }
+  }
+
+  /** Keep a key the server just issued, and note when a held one expires. */
+  private captureSubscription(url: string, res: Response) {
+    const issued = res.headers.get("x-ripar-subscription");
+    const expiresAt = res.headers.get("x-ripar-subscription-expires") ?? undefined;
+    const endpoint = res.headers.get("x-ripar-subscription-endpoint") ?? undefined;
+    if (issued) {
+      this.subscriptions.set(canonical(url), { value: issued, expiresAt, endpoint });
+      return;
+    }
+    // The server reports a held key as expired or unknown by asking for payment
+    // again. Dropping it stops every later call carrying a dead credential.
+    const status = res.headers.get("x-ripar-subscription-status");
+    if (status === "expired" || status === "unknown") this.subscriptions.delete(canonical(url));
   }
 
   /** USD spent in the rolling 24h window, when maxPerDay is set. */
@@ -123,8 +142,13 @@ export class RiparClient {
 
     // Check the price BEFORE paying — the wrapped fetch would otherwise settle
     // whatever it is quoted, which is exactly the runaway we want to prevent.
+    // A held key means this call settles nothing, so the caps have nothing to
+    // check. Quoting anyway would fetch the WINDOW's price — and a $5.00 window
+    // against a $0.01 maxPrice would refuse a call that is in fact free.
+    const covered = this.subscriptions.has(canonical(url));
+
     let quoted: number | null = null;
-    if (this.maxPrice != null || this.ledger) {
+    if (!covered && (this.maxPrice != null || this.ledger)) {
       const q = await this.quote(url, { ...init, body: body != null ? JSON.stringify(body) : undefined });
       if (q.paymentRequired) {
         quoted = priceOf(q.requirements);
@@ -147,10 +171,17 @@ export class RiparClient {
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
       let res: Response;
+      // A held key turns this into a free call — the server checks it before
+      // the payment gate, so the facilitator is never involved.
+      const held = this.subscriptions.get(canonical(url));
       try {
         res = await this.paidFetch(url, {
           method: "POST",
-          headers: { "content-type": "application/json", ...(init.headers ?? {}) },
+          headers: {
+            "content-type": "application/json",
+            ...(held ? { "x-ripar-subscription": held.value } : {}),
+            ...(init.headers ?? {}),
+          },
           ...init,
           body: body != null ? JSON.stringify(body) : (init.body as BodyInit | undefined),
         });
@@ -175,6 +206,7 @@ export class RiparClient {
       // 10000 against a $5 cap would trip it on the first call.
       const payment = readReceipt(res);
       if (payment && quoted != null) this.ledger?.record(quoted);
+      this.captureSubscription(url, res);
 
       if (res.ok) {
         return { data: (await res.json()) as T, payment, status: res.status, attempts: attempt };
@@ -192,6 +224,40 @@ export class RiparClient {
     }
 
     throw lastError ?? new RiparError(`Call to ${url} failed.`, "call_failed");
+  }
+
+  /**
+   * Subscribe to an endpoint: settle the window once, keep the key.
+   *
+   * After this, `call()` on the same URL sends the key and costs nothing until
+   * it expires. Nothing renews on its own — x402 cannot pull from a wallet, so
+   * a lapsed window simply quotes again and the caller decides.
+   */
+  async subscribe(url: string, body?: unknown, init: RequestInit = {}): Promise<Subscription> {
+    const res = await this.call(url, body, init);
+    const key = this.subscriptions.get(canonical(url));
+    if (!key) {
+      throw new RiparError(
+        `${url} took a payment but returned no subscription key, so it is priced per call rather than per window. Use call() instead.`,
+        "not_a_subscription",
+        res.status
+      );
+    }
+    return { key, expiresAt: key.expiresAt, endpoint: key.endpoint, payment: res.payment };
+  }
+
+  /** Load a key kept from an earlier process, so a restart does not re-pay. */
+  useSubscription(url: string, key: string, expiresAt?: string | number) {
+    this.subscriptions.set(canonical(url), {
+      value: key,
+      expiresAt: expiresAt != null ? new Date(expiresAt).toISOString() : undefined,
+      endpoint: undefined,
+    } as StoredKey);
+  }
+
+  /** Keys this client holds, so a caller can persist them itself. */
+  get activeSubscriptions() {
+    return [...this.subscriptions].map(([url, k]) => ({ url, key: k.value, expiresAt: k.expiresAt }));
   }
 
   /** Read an agent's manifest — free, and how discovery starts. */
@@ -262,4 +328,26 @@ export function priceOf(req: unknown): number | null {
 function mnemonicToKey(mnemonic: string): Uint8Array {
   const account = algosdk.mnemonicToSecretKey(mnemonic.trim());
   return account.sk;
+}
+
+type StoredKey = { value: string; expiresAt?: string; endpoint?: string };
+
+export type Subscription = {
+  key: StoredKey;
+  /** ISO 8601, from the server. Undefined only if the server omitted it. */
+  expiresAt?: string;
+  endpoint?: string;
+  payment?: CallResult["payment"];
+};
+
+/** Keys are scoped per endpoint URL. Query and hash do not change which
+ *  endpoint is being called, so they must not split the cache and cause a
+ *  second window to be bought for the same thing. */
+function canonical(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname.replace(/\/$/, "")}`;
+  } catch {
+    return url;
+  }
 }

@@ -1,3 +1,4 @@
+import { parsePeriod } from "./subscriptions.js";
 import { RiparError, type AgentDef, type EndpointDef, type Handler, type InputSchema } from "./types.js";
 
 /**
@@ -7,7 +8,15 @@ import { RiparError, type AgentDef, type EndpointDef, type Handler, type InputSc
  */
 export function defineEndpoint<B = any, R = unknown>(def: EndpointDef<B, R>): EndpointDef<B, R> {
   assertName(def.name);
-  assertPrice(def.price);
+  if (def.subscription) {
+    // parsePeriod throws with a message naming the endpoint and the accepted
+    // forms, so a bad period fails here rather than issuing keys that never
+    // expire.
+    assertPrice(def.subscription.price);
+    parsePeriod(def.subscription.period, def.name);
+  } else {
+    assertPrice(def.price);
+  }
   if (typeof def.handler !== "function") {
     throw new RiparError(`Endpoint "${def.name}" has no handler.`, "invalid_endpoint");
   }
@@ -68,8 +77,15 @@ export function manifest(agent: AgentDef, baseUrl: string) {
         // A price function cannot be serialised, so discovery says so plainly
         // and shows the author's hint. Publishing a made-up number here would
         // be worse than publishing none: an agent would budget against it.
-        price: typeof e.price === "function" ? (e.priceHint ?? "dynamic") : e.price,
-        pricing: typeof e.price === "function" ? "dynamic" : "fixed",
+        price: e.subscription
+          ? e.subscription.price
+          : typeof e.price === "function"
+            ? (e.priceHint ?? "dynamic")
+            : e.price,
+        pricing: e.subscription ? "subscription" : typeof e.price === "function" ? "dynamic" : "fixed",
+        // A browsing agent needs to know the quote buys a window, not a call —
+        // otherwise $5.00 looks like an extremely expensive single request.
+        ...(e.subscription ? { period: String(e.subscription.period) } : {}),
         input: e.input,
         tags: e.tags,
       })),

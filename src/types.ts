@@ -73,12 +73,18 @@ export type PriceFn<B = any> = (ctx: PriceContext<B>) => string | Promise<string
  */
 export type Price<B = any> = string | PriceFn<B>;
 
-export type EndpointDef<B = any, R = unknown> = {
+export type SubscriptionSpec = {
+  /** What the window costs, quoted once. "$5.00". */
+  price: string;
+  /** How long it lasts: "30d", "24h", "90m", or milliseconds. */
+  period: string | number;
+};
+
+type EndpointBase<B = any, R = unknown> = {
   /** URL segment and discovery name. Lowercase, slash-separated. */
   name: string;
   /** One line a stranger's agent can use to decide whether this is what it needs. */
   description?: string;
-  price: Price<B>;
   /** What discovery shows when `price` is a function — a range or a formula, so
    *  a browsing agent still learns roughly what it will pay. */
   priceHint?: string;
@@ -91,6 +97,24 @@ export type EndpointDef<B = any, R = unknown> = {
   tags?: string[];
   handler: Handler<B, R>;
 };
+
+/**
+ * An endpoint charges per call or sells a window, never both — the two answer
+ * the same question ("what does this cost?") with different numbers, and a
+ * definition carrying both leaves the 402 ambiguous. Expressed as a union so
+ * the mistake is a compile error rather than a surprise at runtime.
+ */
+export type EndpointDef<B = any, R = unknown> = EndpointBase<B, R> &
+  (
+    | { price: Price<B>; subscription?: undefined }
+    | {
+        price?: undefined;
+        /** One settlement buys a key that opens this endpoint free until it
+         *  expires. x402 has no recurring scheme and nothing can pull from a
+         *  wallet later, so renewal is another deliberate payment. */
+        subscription: SubscriptionSpec;
+      }
+  );
 
 /** What an agent bids on and executes. An agent is a bundle of endpoints plus
  *  the metadata a marketplace needs to rank and route to it. */
@@ -141,6 +165,8 @@ export type RunRecord = {
   at: string;
 };
 
+import type { SubscriptionStore } from "./subscriptions.js";
+
 export type ServeOptions = {
   port?: number;
   /** Defaults to the GoPlausible facilitator, which sponsors network fees. */
@@ -161,6 +187,11 @@ export type ServeOptions = {
   /** Called once draining finishes. Defaults to exiting the process — override
    *  it when the agent is embedded in something that owns its own lifecycle. */
   onShutdown?: (result: { reason: string; outcome: "drained" | "timeout"; abandoned: number; ms: number }) => void;
+  /** Where issued subscription keys live. The default is in-memory, which is
+   *  correct for one process and wrong for several — a key minted on replica A
+   *  is unknown to B, so the caller is asked to pay twice. Pass a shared store
+   *  (Redis, a table, KV) for anything running more than one instance. */
+  subscriptions?: { store?: SubscriptionStore };
   /** Called once the server is listening. */
   onReady?: (info: { port: number; routes: string[]; network: Network }) => void;
 };
