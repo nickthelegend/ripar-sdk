@@ -1,7 +1,23 @@
 /**
- * The whole loop, for real, against a live Algorand node:
- *   request → 402 with a quote → sign a payment → facilitator settles → 200
- * and then the transaction is looked up on chain to prove it happened.
+ * The x402 loop against a live Algorand LocalNet:
+ *   request → 402 with a quote → sign a payment → settle → 200
+ * then the transaction is looked up on chain.
+ *
+ * SCOPE, stated because this file used to overstate it. It imports NOTHING
+ * from this SDK — the server below is hand-rolled express, and the payment is
+ * assembled with algosdk directly. So it demonstrates that the PROTOCOL works
+ * on Algorand. It proves nothing about ripar-sdk: every line of src/ could be
+ * deleted and this would still print the same output.
+ *
+ * The SDK's own end-to-end coverage is test/subscription-server.test.ts, which
+ * drives the real createServer and the real RiparClient through the genuine
+ * @x402/express middleware.
+ *
+ * It also used to assert nothing at all and always exit 0, so a broken run
+ * looked identical to a working one in CI. There is a verdict at the bottom
+ * now.
+ *
+ * Needs LocalNet: algokit localnet start, and /tmp/localnet.json.
  */
 import express from "express";
 import algosdk from "algosdk";
@@ -21,8 +37,12 @@ const bal = async (addr) => {
 };
 
 console.log("── before ──");
-console.log("  payer   :", await bal(payer.addr.toString()), "USDC");
-console.log("  merchant:", await bal(merchant), "USDC");
+// Captured, not just printed: the verdict compares these against the balances
+// after, so "settled" means the chain agrees rather than the server saying so.
+const payerBefore = await bal(payer.addr.toString());
+const merchantBefore = await bal(merchant);
+console.log("  payer   :", payerBefore, "USDC");
+console.log("  merchant:", merchantBefore, "USDC");
 
 /* ── the paid endpoint ── */
 const app = express();
@@ -73,6 +93,7 @@ const body = { text: "Ripar is the execution and payment layer for autonomous ag
 console.log("\n── 1. unpaid request ──");
 let r = await fetch(URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 console.log("  status:", r.status);
+const gotChallenge = r.status === 402;
 const quote = await r.json();
 const acc = quote.accepts[0];
 console.log("  quoted:", Number(acc.amount) / 1e6, "USDC → ", acc.payTo.slice(0, 12) + "…");
@@ -108,7 +129,36 @@ if (out.settled) {
   console.log("  confirmed round:", info?.confirmedRound ?? "(already committed)");
 }
 console.log("\n── after ──");
-console.log("  payer   :", await bal(payer.addr.toString()), "USDC");
-console.log("  merchant:", await bal(merchant), "USDC");
+const payerAfter = await bal(payer.addr.toString());
+const merchantAfter = await bal(merchant);
+console.log("  payer   :", payerAfter, "USDC");
+console.log("  merchant:", merchantAfter, "USDC");
 
 server.close();
+
+/* The verdict. Reading the balances back off the chain is the only claim here
+   worth making: that the quoted amount actually moved between two accounts. */
+const moved = Number((payerBefore - payerAfter).toFixed(6));
+const received = Number((merchantAfter - merchantBefore).toFixed(6));
+const expected = PRICE / 1e6;
+
+const results = {
+  "the unpaid request was refused with a 402": gotChallenge,
+  "the paid retry was served": r.status === 200,
+  "the settlement is on chain": !!out.settled,
+  [`the payer really lost ${expected} USDC`]: moved === expected,
+  [`the merchant really received ${expected} USDC`]: received === expected,
+};
+
+console.log("\n── verdict ──");
+let ok = true;
+for (const [claim, pass] of Object.entries(results)) {
+  console.log(`  ${pass ? "PASS" : "FAIL"}  ${claim}`);
+  if (!pass) ok = false;
+}
+console.log(
+  ok
+    ? "\nx402 settles on Algorand. This says nothing about ripar-sdk — see test/subscription-server.test.ts."
+    : "\nThe loop did not complete."
+);
+process.exit(ok ? 0 : 1);
