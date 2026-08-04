@@ -3,10 +3,15 @@ import { ExactAvmScheme } from "@x402/avm/exact/client";
 import { toClientAvmSigner } from "@x402/avm";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import algosdk from "algosdk";
+import { coversPayment, readBalance, type WalletBalance } from "./balance.js";
 import { readPaymentRequired, readReceiptHeader, usdOfAccept } from "./headers.js";
+import { Limiter } from "./limiter.js";
+import { resolveFacilitator, type FacilitatorChoice } from "./network.js";
+import { QuoteCache, quoteKey, type QuoteCacheOptions } from "./quotecache.js";
+import { ReceiptLedger, exportReceipts, type ReceiptRecord } from "./receipts.js";
 import { DEFAULT_RETRY, backoffDelay, isRetryable, sleep, type RetryOptions } from "./retry.js";
 import { SpendLedger } from "./spend.js";
-import { CAIP2, RiparError, type Network } from "./types.js";
+import { CAIP2, RiparError, USDC_ASSET_ID, type Network } from "./types.js";
 
 export type ClientOptions = {
   /** 25-word Algorand mnemonic, or a raw 64-byte secret key. */
@@ -20,6 +25,25 @@ export type ClientOptions = {
   maxPerDay?: string;
   /** Repeat 5xx and transport failures. Never 4xx. Default 3 attempts. */
   retry?: RetryOptions | false;
+  /** Reuse a quote for the same URL and body for a few seconds. Off unless
+   *  set, because a quote is a price and a stale price is one nobody agreed to
+   *  — see quotecache.ts. */
+  quoteCache?: QuoteCacheOptions;
+  /** Most independent calls in flight at once. Unlimited unless set. */
+  maxConcurrent?: number;
+  /** Read the wallet before paying, and refuse a quote it cannot cover. Off
+   *  unless set: it adds an algod round trip per call, and it is the caller who
+   *  knows whether that is worth trading for a clearer failure. */
+  preflightBalance?: boolean;
+  /** Where `balance()` reads from. Defaults to public algod for the network. */
+  algodUrl?: string;
+  algodToken?: string;
+  /** Facilitators to fail over between, most preferred first. Read by
+   *  `facilitator()`; never used to pay, because the resource server picks the
+   *  facilitator for its own endpoints. */
+  facilitatorUrls?: string[];
+  /** How many receipts to keep in memory. Default 1000, oldest dropped. */
+  receiptsLimit?: number;
   fetchImpl?: typeof fetch;
 };
 
@@ -31,6 +55,67 @@ export type CallResult<T = unknown> = {
   status: number;
   /** How many attempts it took. 1 unless something was retried. */
   attempts?: number;
+};
+
+export type QuoteResult =
+  | { paymentRequired: false; status: number }
+  | { paymentRequired: true; status: 402; requirements: unknown };
+
+/** One item of work for `callMany` / `estimate`. A bare string is the URL with
+ *  no body, which is the common case. */
+export type CallItem = { url: string; body?: unknown; init?: RequestInit };
+
+/**
+ * One result of a batch, settled rather than thrown.
+ *
+ * A batch of paid calls is the wrong place for fail-fast: `Promise.all` rejects
+ * on the first failure while the rest keep running and keep paying, and the
+ * caller is left holding one error and no idea which of the others settled.
+ */
+export type SettledCall<T = unknown> =
+  | { ok: true; url: string; result: CallResult<T> }
+  | { ok: false; url: string; error: RiparError };
+
+export type EstimateLine = {
+  url: string;
+  /** Null when the price could not be read. Never zero for an unknown price —
+   *  a quote nobody could parse is the one most worth budgeting for. */
+  usd: number | null;
+  status?: number;
+  paymentRequired?: boolean;
+  /** Why `usd` is null. */
+  error?: string;
+};
+
+export type Estimate = {
+  lines: EstimateLine[];
+  /** Sum of the lines whose price WAS readable. */
+  totalUsd: number;
+  /** The lines missing from that sum. A caller budgeting off `totalUsd` has to
+   *  look here first, or it will plan against a number that silently excludes
+   *  the endpoints it understands least. */
+  unreadable: EstimateLine[];
+};
+
+export type SubscribeAdvice = {
+  url: string;
+  expectedCalls: number;
+  /** What one unkeyed call settles today, from the live 402. */
+  perCallUsd: number | null;
+  /** The window this endpoint sells, from its manifest entry. Null when it
+   *  sells none, which is most endpoints. */
+  window: { usd: number; period?: string } | null;
+  /** expectedCalls × perCallUsd. */
+  payPerCallUsd: number | null;
+  cheaper: "subscribe" | "per-call" | "same" | "unknown";
+  savingsUsd: number | null;
+  /** Calls at which the window has paid for itself. */
+  breakEvenCalls: number | null;
+  /** The comparison written out, so whoever reviews an agent's decision can
+   *  check the arithmetic instead of trusting it. */
+  arithmetic: string;
+  /** Why no recommendation could be made, or what qualifies the one given. */
+  reason?: string;
 };
 
 /**
@@ -47,6 +132,16 @@ export class RiparClient {
   private readonly retry: RetryOptions | false;
   private readonly baseFetch: typeof fetch;
   private paidFetch?: typeof fetch;
+  /** The signer's Algorand address, when there is a signer. This is what
+   *  `balance()` reads and what settlement debits. */
+  private readonly address?: string;
+  private readonly limiter?: Limiter;
+  private readonly quotes?: QuoteCache<QuoteResult>;
+  private readonly preflightBalance: boolean;
+  private readonly algodUrl?: string;
+  private readonly algodToken?: string;
+  private readonly facilitatorUrls: string[];
+  private readonly receiptLedger: ReceiptLedger;
   /** Subscription keys, by endpoint URL. Held in memory only — a key is bearer
    *  credentials for a window the caller already paid for, so writing it to disk
    *  is the caller's decision, not ours. `activeSubscriptions` exposes them. */
@@ -58,15 +153,24 @@ export class RiparClient {
     this.ledger = opts.maxPerDay != null ? new SpendLedger(parseUsd(opts.maxPerDay, "maxPerDay")) : undefined;
     this.retry = opts.retry ?? DEFAULT_RETRY;
     this.baseFetch = opts.fetchImpl ?? globalThis.fetch;
+    this.limiter = opts.maxConcurrent != null ? new Limiter(opts.maxConcurrent) : undefined;
+    this.quotes = opts.quoteCache ? new QuoteCache<QuoteResult>(opts.quoteCache) : undefined;
+    this.preflightBalance = opts.preflightBalance === true;
+    this.algodUrl = opts.algodUrl;
+    this.algodToken = opts.algodToken;
+    this.facilitatorUrls = opts.facilitatorUrls ?? [];
+    this.receiptLedger = new ReceiptLedger(opts.receiptsLimit);
 
     // toClientAvmSigner takes a BASE64 64-byte key, not raw bytes — passing a
     // Uint8Array typechecks as `any` in JS and fails at signing time.
-    const keyB64 = opts.secretKey
-      ? Buffer.from(opts.secretKey).toString("base64")
-      : opts.mnemonic
-        ? Buffer.from(mnemonicToKey(opts.mnemonic)).toString("base64")
-        : undefined;
-    if (keyB64) {
+    const key = opts.secretKey ?? (opts.mnemonic ? mnemonicToKey(opts.mnemonic) : undefined);
+    const keyB64 = key ? Buffer.from(key).toString("base64") : undefined;
+    if (key && keyB64) {
+      // An Algorand ed25519 secret key is seed(32) ‖ public(32), so the address
+      // is derivable here and never has to be passed in alongside the key —
+      // two sources for one identity is how a client ends up reading the
+      // balance of a wallet it is not spending from.
+      this.address = algosdk.encodeAddress(key.subarray(32));
       const signer = toClientAvmSigner(keyB64);
       // MUST be the wildcard, not CAIP2[network]. @x402/core matches a
       // registration by exact key or glob and has no prefix fallback, while
@@ -106,7 +210,18 @@ export class RiparClient {
   }
 
   /** Read the price without paying and without a wallet. */
-  async quote(url: string, init: RequestInit = {}) {
+  async quote(url: string, init: RequestInit = {}): Promise<QuoteResult> {
+    const key = this.quotes ? quoteKey(url, String(init.method ?? "POST"), init.body) : null;
+    if (key && this.quotes) {
+      const hit = this.quotes.get(key);
+      if (hit) return hit;
+    }
+    const fresh = await this.gate(() => this.quoteOnce(url, init));
+    if (key && this.quotes) this.quotes.set(key, fresh);
+    return fresh;
+  }
+
+  private async quoteOnce(url: string, init: RequestInit): Promise<QuoteResult> {
     // A body with no content-type is a body the server will not parse, and an
     // unparsed body means a dynamic price is quoted from `{}` — the same number
     // for every request, which looks like the feature is simply not working.
@@ -131,8 +246,21 @@ export class RiparClient {
     return { paymentRequired: true as const, status: 402, requirements };
   }
 
+  /**
+   * Run something that opens a socket under the concurrency limit, when one is
+   * set. Re-entrant, so `call()` → `quote()` → `balance()` takes ONE permit
+   * between them rather than deadlocking on itself at `maxConcurrent: 1`.
+   */
+  private gate<T>(task: () => Promise<T>): Promise<T> {
+    return this.limiter ? this.limiter.run(task) : task();
+  }
+
   /** Call a paid endpoint, settling it. Throws if no signer was configured. */
   async call<T = unknown>(url: string, body?: unknown, init: RequestInit = {}): Promise<CallResult<T>> {
+    return this.gate(() => this.callOnce<T>(url, body, init));
+  }
+
+  private async callOnce<T>(url: string, body?: unknown, init: RequestInit = {}): Promise<CallResult<T>> {
     if (!this.paidFetch) {
       throw new RiparError(
         "This client has no signer, so it can read quotes but cannot pay. Construct RiparClient with a mnemonic or secretKey.",
@@ -158,21 +286,25 @@ export class RiparClient {
     if (key && !covered) this.subscriptions.delete(canonical(url));
 
     let quoted: number | null = null;
-    if (!covered && (this.maxPrice != null || this.ledger)) {
+    if (!covered && (this.maxPrice != null || this.ledger || this.preflightBalance)) {
       const q = await this.quote(url, { ...init, body: body != null ? JSON.stringify(body) : undefined });
       if (q.paymentRequired) {
-        quoted = priceOf(q.requirements);
-        if (quoted == null) {
-          // Fail closed. A cap that cannot read the quote must refuse, not pay
+        const picked = pickAccept(q.requirements);
+        quoted = picked?.usd ?? null;
+        if (quoted == null || !picked) {
+          // Fail closed. A guard that cannot read the quote must refuse, not pay
           // an amount it never saw.
           throw new RiparError(
-            `${url} asked for payment but the quote could not be read, and this client has a spending limit. Refusing to pay blind.`,
+            `${url} asked for payment but the quote could not be read, and this client has ${
+              this.maxPrice != null || this.ledger ? "a spending limit" : "a balance preflight"
+            }. Refusing to pay blind.`,
             "unreadable_quote",
             402,
             q.requirements
           );
         }
         this.assertAffordable(quoted, q.requirements);
+        if (this.preflightBalance) await this.assertWalletCovers(picked.accept, q.requirements);
       }
     }
 
@@ -228,6 +360,12 @@ export class RiparClient {
       // 10000 against a $5 cap would trip it on the first call.
       const payment = readReceipt(res);
       if (payment && quoted != null) this.ledger?.record(quoted);
+      // Recorded on the receipt rather than on a 200, because the receipt is
+      // what proves money moved: a call that ends 4xx after settling still
+      // spent, and one covered by a window returns 200 having spent nothing.
+      if (payment) {
+        this.receiptLedger.record({ ...payment, url, timestamp: new Date().toISOString() });
+      }
       this.captureSubscription(url, res);
 
       if (res.ok) {
@@ -285,11 +423,301 @@ export class RiparClient {
   /** Read an agent's manifest — free, and how discovery starts. */
   async discover(baseUrl: string) {
     const url = `${baseUrl.replace(/\/$/, "")}/.well-known/ripar.json`;
-    const res = await this.baseFetch(url);
+    const res = await this.gate(() => this.baseFetch(url));
     if (!res.ok) {
       throw new RiparError(`No Ripar manifest at ${url} (${res.status}).`, "no_manifest", res.status);
     }
     return res.json();
+  }
+
+  /**
+   * What the signer's wallet holds, read from algod.
+   *
+   * `assetId` defaults to USDC for the network, which is what this SDK settles
+   * in. `call()` passes the id out of the live quote instead, because checking
+   * a holding the quote is not denominated in would approve a payment the
+   * wallet cannot make.
+   */
+  async balance(assetId?: number): Promise<WalletBalance> {
+    if (!this.address) {
+      throw new RiparError(
+        "This client has no signer, so there is no wallet to read. Construct RiparClient with a mnemonic or secretKey.",
+        "no_signer"
+      );
+    }
+    return this.gate(() =>
+      readBalance({
+        address: this.address!,
+        network: this.network,
+        assetId: assetId ?? USDC_ASSET_ID[this.network],
+        algodUrl: this.algodUrl,
+        algodToken: this.algodToken,
+        fetchImpl: this.baseFetch,
+      })
+    );
+  }
+
+  /**
+   * Price a batch before committing to it. Free, and needs no signer — the
+   * whole point is to decide whether to spend before a wallet is involved.
+   */
+  async estimate(items: (string | CallItem)[]): Promise<Estimate> {
+    const lines = await Promise.all(
+      items.map(async (raw): Promise<EstimateLine> => {
+        const item = toItem(raw);
+        try {
+          const q = await this.quote(item.url, {
+            ...item.init,
+            body: item.body != null ? JSON.stringify(item.body) : item.init?.body,
+          });
+          if (!q.paymentRequired) {
+            // Answered without asking for payment, so it really is free and
+            // zero belongs in the total — which is exactly what an unreadable
+            // quote is not.
+            return { url: item.url, usd: 0, status: q.status, paymentRequired: false };
+          }
+          const price = priceOf(q.requirements);
+          if (price == null) {
+            return {
+              url: item.url,
+              usd: null,
+              status: 402,
+              paymentRequired: true,
+              error: "asked for payment in an amount this client could not read",
+            };
+          }
+          return { url: item.url, usd: price, status: 402, paymentRequired: true };
+        } catch (err) {
+          return { url: item.url, usd: null, error: (err as Error).message };
+        }
+      })
+    );
+
+    return {
+      lines,
+      // Only the readable lines are summed, and the rest are listed separately
+      // rather than counted as zero. A total that quietly swallows the prices it
+      // failed to parse is worse than no total: it is a budget that looks
+      // complete and is not.
+      totalUsd: round6(lines.reduce((sum, l) => sum + (l.usd ?? 0), 0)),
+      unreadable: lines.filter((l) => l.usd == null),
+    };
+  }
+
+  /**
+   * Call several endpoints, returning one settled result per input, in order.
+   *
+   * Every guard still applies per call: a price above maxPrice, a wallet that
+   * cannot cover the quote, or a daily cap with no room fails that item and
+   * only that item. Note that with concurrency above 1 the daily cap is checked
+   * against what the ledger has RECORDED, and calls in flight together have not
+   * recorded anything yet — `maxConcurrent: 1` is what makes the cap exact.
+   */
+  async callMany<T = unknown>(
+    items: (string | CallItem)[],
+    opts: { concurrency?: number } = {}
+  ): Promise<SettledCall<T>[]> {
+    // A batch limiter is separate from the client's, and is always acquired
+    // first, so the two can only ever be taken in one order — which is what
+    // keeps a tighter client limit from deadlocking against a wider batch one.
+    const batch = opts.concurrency != null ? new Limiter(opts.concurrency) : undefined;
+
+    return Promise.all(
+      items.map((raw) => {
+        const item = toItem(raw);
+        const run = async (): Promise<SettledCall<T>> => {
+          try {
+            return { ok: true, url: item.url, result: await this.call<T>(item.url, item.body, item.init) };
+          } catch (err) {
+            return { ok: false, url: item.url, error: asRiparError(err, item.url) };
+          }
+        };
+        return batch ? batch.run(run) : run();
+      })
+    );
+  }
+
+  /**
+   * Advice on whether a window beats paying per call, with the arithmetic shown.
+   *
+   * It buys nothing. An SDK that subscribed on its own judgement would settle a
+   * window price the caller never saw — the exact move maxPrice exists to stop —
+   * so this returns a recommendation and leaves `subscribe()` to the caller.
+   */
+  async shouldSubscribe(url: string, expectedCalls: number): Promise<SubscribeAdvice> {
+    if (!Number.isFinite(expectedCalls) || expectedCalls < 1) {
+      throw new RiparError(
+        `expectedCalls must be at least 1; got ${expectedCalls}. There is nothing to compare for zero calls.`,
+        "invalid_expected_calls"
+      );
+    }
+    const calls = Math.ceil(expectedCalls);
+    const blank: SubscribeAdvice = {
+      url,
+      expectedCalls: calls,
+      perCallUsd: null,
+      window: null,
+      payPerCallUsd: null,
+      cheaper: "unknown",
+      savingsUsd: null,
+      breakEvenCalls: null,
+      arithmetic: "",
+    };
+
+    // The manifest is the endpoint's published price list; the 402 is what it
+    // will actually charge right now. Both are needed: the manifest is the only
+    // place a window's PERIOD appears, and the quote is the only number that is
+    // certainly current.
+    const [q, mf] = await Promise.all([
+      this.quote(url).catch((err: Error) => err),
+      this.discover(originOf(url)).catch(() => null),
+    ]);
+
+    if (q instanceof Error) {
+      return {
+        ...blank,
+        arithmetic: "no comparison: the endpoint could not be quoted",
+        reason: `${url} could not be quoted: ${q.message}`,
+      };
+    }
+    if (!q.paymentRequired) {
+      return {
+        ...blank,
+        perCallUsd: 0,
+        payPerCallUsd: 0,
+        cheaper: "per-call",
+        savingsUsd: 0,
+        arithmetic: `${calls} calls × $0.000000 = $0.000000`,
+        reason: `${url} answered ${q.status} without asking for payment, so there is no window to buy.`,
+      };
+    }
+
+    const perCallUsd = priceOf(q.requirements);
+    const entry = manifestEntryFor(mf, url);
+    const sellsWindow = entry?.pricing === "subscription";
+    const published = sellsWindow ? softUsd(entry?.price) : null;
+    const period = sellsWindow && entry?.period != null ? String(entry.period) : undefined;
+
+    if (!sellsWindow || published == null) {
+      const total = perCallUsd == null ? null : round6(perCallUsd * calls);
+      return {
+        ...blank,
+        perCallUsd,
+        payPerCallUsd: total,
+        cheaper: perCallUsd == null ? "unknown" : "per-call",
+        savingsUsd: null,
+        arithmetic:
+          total == null
+            ? "no comparison: the per-call price could not be read"
+            : `${calls} calls × ${money(perCallUsd!)} = ${money(total)}, and no window is on offer`,
+        reason: entry
+          ? `${url} is priced per call and sells no window, so paying per call is the only option.`
+          : `${originOf(url)} publishes no Ripar manifest entry for this URL, so no window could be found. ` +
+            `Only the live per-call quote is known.`,
+      };
+    }
+
+    // An endpoint that sells a window has no cheaper single-call price: one
+    // settlement buys the window, so a caller that pays and then discards the
+    // key pays the window price again on the next call. That is what makes the
+    // comparison real rather than circular — the alternative to subscribing is
+    // not "a small per-call fee", it is paying the window price every time.
+    const windowUsd = perCallUsd ?? published;
+    const payPerCallUsd = perCallUsd == null ? null : round6(perCallUsd * calls);
+    const drifted = perCallUsd != null && Math.abs(perCallUsd - published) > 1e-9;
+    const note =
+      (drifted
+        ? `The manifest publishes ${money(published)} for this window but the live quote is ${money(perCallUsd!)}; ` +
+          `the live quote is what settles. `
+        : "") +
+      `${url} sells a ${period ?? "fixed"} window rather than single calls, and every call made without the key ` +
+      `it issues settles the full window price again — so keep the key (activeSubscriptions / useSubscription).`;
+
+    if (payPerCallUsd == null) {
+      return {
+        ...blank,
+        window: { usd: windowUsd, period },
+        arithmetic: "no comparison: the live quote could not be read",
+        reason: note,
+      };
+    }
+
+    const savingsUsd = round6(payPerCallUsd - windowUsd);
+    return {
+      url,
+      expectedCalls: calls,
+      perCallUsd,
+      window: { usd: windowUsd, period },
+      payPerCallUsd,
+      cheaper: savingsUsd > 0 ? "subscribe" : savingsUsd < 0 ? "per-call" : "same",
+      savingsUsd,
+      breakEvenCalls: perCallUsd! > 0 ? Math.ceil(windowUsd / perCallUsd!) : null,
+      arithmetic:
+        `${calls} calls × ${money(perCallUsd!)} = ${money(payPerCallUsd)} unkeyed, ` +
+        `vs one ${period ?? "fixed"} window at ${money(windowUsd)} → ` +
+        (savingsUsd > 0
+          ? `subscribe, saving ${money(savingsUsd)}`
+          : savingsUsd < 0
+            ? `pay per call, saving ${money(-savingsUsd)}`
+            : "either; they cost the same"),
+      reason: note,
+    };
+  }
+
+  /**
+   * Pick the first configured facilitator that is up and speaks Algorand.
+   *
+   * The client never pays through it — the resource server names the
+   * facilitator in its own 402 — so this is for choosing what to hand `serve()`,
+   * or for checking a facilitator is alive before starting a batch that depends
+   * on it. See network.ts.
+   */
+  async facilitator(urls: string[] = this.facilitatorUrls): Promise<FacilitatorChoice> {
+    return this.gate(() =>
+      resolveFacilitator(urls, { network: this.network, fetchImpl: this.baseFetch })
+    );
+  }
+
+  /** Every settlement this client has seen, oldest first. */
+  get receipts(): ReceiptRecord[] {
+    return this.receiptLedger.list();
+  }
+
+  /** USD across those receipts whose amount could be read. */
+  get spentTotal(): number {
+    return this.receiptLedger.totalUsd();
+  }
+
+  /** The receipts as a file: JSON, or RFC 4180 CSV with every field quoted. */
+  exportReceipts(format: "json" | "csv" = "json"): string {
+    return exportReceipts(this.receiptLedger.list(), format);
+  }
+
+  /**
+   * Refuse a quote the wallet cannot settle, before the round trip.
+   *
+   * The facilitator would reject it anyway, one network hop later, with an
+   * error that does not distinguish "you hold no USDC" from "you never opted
+   * in to USDC" — and only one of those is fixed with money.
+   */
+  private async assertWalletCovers(accept: Record<string, unknown>, requirements: unknown) {
+    const assetId = Number(accept.asset);
+    // No asset id means the price is plain USD with no ASA behind it, so there
+    // is no holding to check. Refusing here would block a payment that may be
+    // perfectly good, which is worse than the round trip this saves.
+    if (!Number.isInteger(assetId)) return;
+
+    const required = String(accept.maxAmountRequired ?? accept.amount ?? "");
+    if (!required) return;
+
+    const balance = await this.balance(assetId);
+    const coverage = coversPayment(balance, required);
+    if (!coverage.ok) {
+      // ALGO is deliberately not checked: the default facilitator sponsors the
+      // network fee, so a wallet with zero ALGO and enough USDC pays perfectly
+      // well, and refusing on it would break the common setup.
+      throw new RiparError(coverage.message, coverage.code, 402, requirements);
+    }
   }
 
   /** Both wallet guards, applied to a quote before anything is signed. */
@@ -336,15 +764,97 @@ function readReceipt(res: Response): CallResult["payment"] {
  * the difference between a cap that works and one that never fires.
  */
 export function priceOf(req: unknown): number | null {
+  return pickAccept(req)?.usd ?? null;
+}
+
+/**
+ * The entry the price came from, alongside the price.
+ *
+ * The balance preflight needs the asset id and the atomic amount, and they have
+ * to come from the SAME entry the cap approved — an `accepts` list can offer
+ * several assets, and checking the holding of one while paying in another is a
+ * check that passes for the wrong reason.
+ */
+export function pickAccept(req: unknown): { accept: Record<string, any>; usd: number } | null {
   if (!req || typeof req !== "object") return null;
   const anyReq = req as Record<string, any>;
   const accepts = anyReq.accepts ?? anyReq;
   const list = Array.isArray(accepts) ? accepts : [accepts];
   for (const a of list) {
     const usd = usdOfAccept(a);
-    if (usd != null) return usd;
+    if (usd != null && a && typeof a === "object") return { accept: a as Record<string, any>, usd };
   }
   return null;
+}
+
+/** A bare URL is the common case: no body, no init. */
+function toItem(raw: string | CallItem): CallItem {
+  return typeof raw === "string" ? { url: raw } : raw;
+}
+
+/** Batch results carry an error object, not a rejection, so anything thrown has
+ *  to arrive as one — including the SyntaxError a malformed JSON body throws
+ *  well outside this SDK's own error paths. */
+function asRiparError(err: unknown, url: string): RiparError {
+  if (err instanceof RiparError) return err;
+  return new RiparError(`Call to ${url} failed: ${(err as Error)?.message ?? String(err)}`, "call_failed", undefined, err);
+}
+
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
+type ManifestEndpoint = { url?: string; price?: unknown; pricing?: string; period?: unknown };
+
+/**
+ * The manifest line describing this URL.
+ *
+ * Matched on the full origin+path first and on the path alone second: a
+ * manifest advertises the URL callers reach it on, which behind a proxy is not
+ * the host the caller happens to be using. Falling back to the path keeps the
+ * lookup working there, and an agent serves its own endpoints so the path
+ * cannot collide with a different agent's.
+ */
+function manifestEntryFor(mf: unknown, url: string): ManifestEndpoint | undefined {
+  const endpoints = (mf as { endpoints?: ManifestEndpoint[] } | null)?.endpoints;
+  if (!Array.isArray(endpoints)) return undefined;
+  const want = canonical(url);
+  const wantPath = pathOf(url);
+  return (
+    endpoints.find((e) => e.url && canonical(String(e.url)) === want) ??
+    endpoints.find((e) => e.url && pathOf(String(e.url)) === wantPath)
+  );
+}
+
+function pathOf(url: string): string {
+  try {
+    return new URL(url).pathname.replace(/\/$/, "");
+  } catch {
+    return url;
+  }
+}
+
+/** A published price that may not be a number at all: a manifest prints
+ *  "dynamic" where the price is a function, and budgeting off that string as if
+ *  it were zero is how a plan comes out free. */
+function softUsd(v: unknown): number | null {
+  if (v == null) return null;
+  const n = Number(String(v).replace("$", "").trim());
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function money(n: number) {
+  return `$${n.toFixed(6)}`;
+}
+
+/** Six decimals is USDC's own precision, so rounding there cannot lose a real
+ *  payment while it does remove the float dust that makes a total look wrong. */
+function round6(n: number) {
+  return Number(n.toFixed(6));
 }
 
 function mnemonicToKey(mnemonic: string): Uint8Array {

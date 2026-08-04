@@ -32,6 +32,19 @@ export const USDC_ASSET_ID: Record<Network, number> = {
 
 export const DEFAULT_FACILITATOR = "https://facilitator.goplausible.xyz";
 
+/**
+ * Where a balance is read from, per network.
+ *
+ * Public, unauthenticated nodes: reading an account is a public query and the
+ * client never signs through algod — payments go to the facilitator, not to a
+ * node — so there is nothing here worth an API key. A caller running their own
+ * node passes `algodUrl`, and one behind a gated provider passes `algodToken`.
+ */
+export const DEFAULT_ALGOD: Record<Network, string> = {
+  mainnet: "https://mainnet-api.algonode.cloud",
+  testnet: "https://testnet-api.algonode.cloud",
+};
+
 /** A JSON Schema fragment describing the request body. Published to discovery,
  *  which is what lets an agent build a valid call without reading docs. */
 export type InputSchema = {
@@ -167,6 +180,11 @@ export type RunRecord = {
 };
 
 import type { SubscriptionStore } from "./subscriptions.js";
+import type { CorsOptions } from "./cors.js";
+import type { AccessOptions, FreeTierOptions } from "./access.js";
+import type { WebhookOptions } from "./webhooks.js";
+import type { Logger, LoggerOptions } from "./logging.js";
+import type { OpenApiOptions } from "./openapi.js";
 
 export type ServeOptions = {
   port?: number;
@@ -193,6 +211,28 @@ export type ServeOptions = {
    *  is unknown to B, so the caller is asked to pay twice. Pass a shared store
    *  (Redis, a table, KV) for anything running more than one instance. */
   subscriptions?: { store?: SubscriptionStore };
+  /** Cross-origin access. Off unless set. The x402 headers are exposed
+   *  automatically — see cors.ts for why that is the part everybody misses. */
+  cors?: CorsOptions;
+  /** Refuse or admit callers by payer address, before the payment gate. Read
+   *  the warning in access.ts: an allowlist over an unverified identity is not
+   *  access control, and this refuses to build one by accident. */
+  access?: AccessOptions;
+  /** Let each payer's first N calls through free, so an endpoint can be tried
+   *  before it is bought. In memory, per process. */
+  freeTier?: FreeTierOptions;
+  /** POST a signed event wherever settlement should be recorded. Delivery is
+   *  fired after the response flushes and never blocks it. */
+  webhook?: WebhookOptions;
+  /** Structured JSON logging. Bodies are never logged and the payment header
+   *  is always redacted. Off unless set. */
+  logging?: LoggerOptions | Logger;
+  /** Serve GET /openapi.json, generated from the endpoints themselves. */
+  openapi?: boolean | OpenApiOptions;
+  /** Named dependency probes for GET /health. A probe that throws or returns
+   *  false makes the agent report unhealthy, which is what a load balancer
+   *  needs and `{ ok: true }` can never provide. */
+  healthChecks?: Record<string, () => Promise<boolean> | boolean>;
   /** Called once the server is listening. */
   onReady?: (info: { port: number; routes: string[]; network: Network }) => void;
 };

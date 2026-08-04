@@ -61,6 +61,113 @@ export async function resolveFacilitatorNetwork(
   return match.network;
 }
 
+export type FacilitatorProbe = {
+  url: string;
+  ok: boolean;
+  /** The Algorand kind it advertised, when it advertised one. */
+  network?: string;
+  /** Why this one was passed over. Present on every entry that was not chosen:
+   *  a failover that reports only its winner leaves an operator unable to tell a
+   *  typo in a URL from a facilitator that is down, and those have opposite
+   *  fixes. */
+  reason?: string;
+};
+
+export type FacilitatorChoice =
+  | { ok: true; url: string; network: string; tried: FacilitatorProbe[] }
+  | { ok: false; tried: FacilitatorProbe[]; error: string };
+
+/**
+ * Pick the first facilitator in the list that is actually up and speaks
+ * Algorand.
+ *
+ * A facilitator is a single point of failure for every payment on an agent, and
+ * `facilitatorUrl` takes exactly one URL — so an outage is a manual edit and a
+ * restart. Probing a list turns that into a startup decision.
+ *
+ * Sequential, in the caller's order, and stopping at the first answer: the list
+ * is a preference order, not a race. Probing them all in parallel would pick
+ * whichever replied fastest, which is how a primary quietly stops being used.
+ *
+ * The client does not consult this while paying, because it cannot: under x402
+ * the RESOURCE SERVER names the facilitator in its 402 and the payer settles
+ * through that one. This is for choosing what to pass to `serve()`, or for a
+ * caller who wants to know whether the facilitator behind an endpoint is alive
+ * before it starts a batch.
+ */
+export async function resolveFacilitator(
+  urls: string[],
+  opts: { network?: Network; fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+): Promise<FacilitatorChoice> {
+  const doFetch = opts.fetchImpl ?? globalThis.fetch;
+  const timeoutMs = opts.timeoutMs ?? 5_000;
+  const want = opts.network ? (CAIP2[opts.network] as string) : undefined;
+  const tried: FacilitatorProbe[] = [];
+
+  if (!urls.length) {
+    return { ok: false, tried, error: "No facilitator URLs to try." };
+  }
+
+  for (const raw of urls) {
+    const url = raw.replace(/\/$/, "");
+    const probe = `${url}/supported`;
+    let kinds: SupportedKind[];
+
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
+      let res: Response;
+      try {
+        res = await doFetch(probe, { headers: { accept: "application/json" }, signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!res.ok) {
+        tried.push({ url, ok: false, reason: `/supported returned ${res.status}` });
+        continue;
+      }
+      const body = (await res.json()) as { kinds?: SupportedKind[] };
+      kinds = Array.isArray(body?.kinds) ? body.kinds : [];
+    } catch (err) {
+      tried.push({ url, ok: false, reason: `unreachable: ${(err as Error).message}` });
+      continue;
+    }
+
+    const algorand = kinds.filter(
+      (k) => k.scheme === "exact" && typeof k.network === "string" && k.network.startsWith("algorand:")
+    );
+    if (!algorand.length) {
+      const seen = kinds.map((k) => `${k.scheme ?? "?"} on ${k.network ?? "?"}`).join(", ") || "nothing";
+      tried.push({ url, ok: false, reason: `advertises no exact scheme on Algorand (it advertises ${seen})` });
+      continue;
+    }
+
+    // Prefix matching in both directions, for the same reason
+    // resolveFacilitatorNetwork does it: the package constant is a TRUNCATED
+    // genesis hash and facilitators publish the full one, so an equality test
+    // rejects the very facilitator it is looking for.
+    const match = want
+      ? algorand.find((k) => k.network!.startsWith(want) || want.startsWith(k.network!))
+      : algorand[0];
+    if (!match?.network) {
+      const seen = algorand.map((k) => k.network).join(", ");
+      tried.push({ url, ok: false, reason: `supports Algorand but not ${opts.network} (it advertises ${seen})` });
+      continue;
+    }
+
+    tried.push({ url, ok: true, network: match.network });
+    return { ok: true, url, network: match.network, tried };
+  }
+
+  return {
+    ok: false,
+    tried,
+    error: `None of the ${urls.length} facilitator(s) could be used: ${tried
+      .map((t) => `${t.url} — ${t.reason}`)
+      .join("; ")}`,
+  };
+}
+
 /** True when the facilitator sponsors the network fee, meaning a caller needs
  *  USDC but no ALGO. Worth surfacing — it removes a whole onboarding step. */
 export async function facilitatorSponsorsFees(
