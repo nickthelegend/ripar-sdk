@@ -1,3 +1,5 @@
+# fly.toml — https://fly.io.  fly launch --no-deploy, then:
+#   fly secrets set RIPAR_PAY_TO=<your Algorand address>
 app = "ripar-agent"
 primary_region = "iad"
 
@@ -5,22 +7,19 @@ primary_region = "iad"
   dockerfile = "Dockerfile"
 
 [env]
-  PORT = "4021"
   RIPAR_NETWORK = "testnet"
-  # RIPAR_PAY_TO is NOT set here on purpose: set it with `fly secrets set`.
-  # A default payout address would silently settle to someone else.
+  PORT = "4021"
 
 [http_service]
   internal_port = 4021
   force_https = true
-  auto_stop_machines = "suspend"
-  auto_start_machines = true
-  # An idle paid endpoint should cost nothing to keep listed.
-  min_machines_running = 0
+  # NOT zero. An agent scaled to zero misses the settlement webhook for a call
+  # that already completed, and cold-starts into the next caller's 402.
+  min_machines_running = 1
 
   [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
     grace_period = "10s"
+    interval = "15s"
     method = "GET"
     path = "/health"
+    timeout = "3s"

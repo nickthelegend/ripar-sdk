@@ -1,15 +1,14 @@
+# render.yaml — https://render.com
 services:
   - type: web
     name: ripar-agent
     runtime: docker
     dockerfilePath: ./Dockerfile
-    # /health is deliberately unpaid; a paid health check would read as an
-    # outage the moment the wallet ran dry.
     healthCheckPath: /health
     envVars:
+      # sync: false means Render prompts rather than inventing one. Settlement
+      # goes straight to this address, so a wrong value pays a stranger.
       - key: RIPAR_PAY_TO
         sync: false
       - key: RIPAR_NETWORK
-        value: mainnet
-      - key: PORT
-        value: 4021
+        value: testnet

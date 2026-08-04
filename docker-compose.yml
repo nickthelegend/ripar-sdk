@@ -1,0 +1,47 @@
+# A paid agent, running locally, with nothing stubbed.
+#
+#   RIPAR_PAY_TO=<your Algorand address> docker compose up
+#
+# The agent talks to the real GoPlausible facilitator and settles on real
+# TestNet. There is no mock facilitator here on purpose: a local stack that
+# fakes settlement teaches you a flow that does not exist, and the first real
+# call is where you find out.
+services:
+  agent:
+    build: .
+    ports:
+      - "${PORT:-4021}:4021"
+    environment:
+      # No default. A default here means a container started from this file
+      # quotes real money to an address its operator never chose.
+      RIPAR_PAY_TO: ${RIPAR_PAY_TO:?set RIPAR_PAY_TO to the Algorand address that should receive settlement}
+      RIPAR_NETWORK: ${RIPAR_NETWORK:-testnet}
+      PORT: 4021
+    healthcheck:
+      # The SDK's /health, which reports 503 when a declared dependency is
+      # down — so `depends_on: condition: service_healthy` means something.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4021/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # A receiver for settlement webhooks, so the delivery path is observable
+  # without wiring up anything external. Prints each signed event.
+  webhook-sink:
+    image: node:24-alpine
+    profiles: ["webhooks"]
+    command:
+      - node
+      - -e
+      - |
+        require("node:http").createServer((q, s) => {
+          let b = ""; q.on("data", (d) => (b += d));
+          q.on("end", () => {
+            console.log(new Date().toISOString(), q.headers["x-ripar-event"], b);
+            s.writeHead(200).end();
+          });
+        }).listen(4300, () => console.log("webhook sink on :4300"));
+    ports:
+      - "4300:4300"
