@@ -6,7 +6,9 @@ primary_region = "iad"
 
 [env]
   PORT = "4021"
-  RIPAR_NETWORK = "mainnet"
+  RIPAR_NETWORK = "testnet"
+  # RIPAR_PAY_TO is NOT set here on purpose: set it with `fly secrets set`.
+  # A default payout address would silently settle to someone else.
 
 [http_service]
   internal_port = 4021

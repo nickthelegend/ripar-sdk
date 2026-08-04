@@ -25,8 +25,14 @@ const agent = defineAgent({
   handle: "text-tools",
   description: "Small, cheap text utilities priced per call.",
   skills: ["text", "summarisation"],
-  payTo: process.env.RIPAR_PAY_TO ?? "PBXELTAXFHNNP3ZQFBC36WKUGVX732UG4CQQH22CP6NNIY5FFIY5UINYAU",
-  network: (process.env.RIPAR_NETWORK as "mainnet" | "testnet") ?? "mainnet",
+  // No fallback, deliberately. This file is the Dockerfile CMD and the
+  // Railway start command, so a default here means a container deployed from
+  // the shipped configs quotes real USDC to an address the operator never
+  // chose — and passes /health, so nothing signals it. defineAgent's
+  // assertAddress refuses to boot on "" instead, which fails closed.
+  payTo: process.env.RIPAR_PAY_TO ?? "",
+  // TestNet by default: an accidental deploy should not quote real money.
+  network: (process.env.RIPAR_NETWORK as "mainnet" | "testnet") ?? "testnet",
   endpoints: [summarize],
 });
 

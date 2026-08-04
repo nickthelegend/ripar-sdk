@@ -64,7 +64,14 @@ export class RiparClient {
         : undefined;
     if (keyB64) {
       const signer = toClientAvmSigner(keyB64);
-      const client = new x402Client().register(CAIP2[this.network], new ExactAvmScheme(signer));
+      // MUST be the wildcard, not CAIP2[network]. @x402/core matches a
+      // registration by exact key or glob and has no prefix fallback, while
+      // CAIP-2 caps a reference at 32 chars so the constant is a TRUNCATED
+      // genesis hash (41 chars) and every facilitator quotes the full one (53).
+      // Registering the constant means no scheme is ever found and the client
+      // cannot pay anything — server.ts already uses the wildcard for exactly
+      // this reason; the client was missed.
+      const client = new x402Client().register("algorand:*", new ExactAvmScheme(signer));
       this.paidFetch = wrapFetchWithPayment(this.baseFetch, client) as typeof fetch;
     }
   }
