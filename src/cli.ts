@@ -5,6 +5,15 @@ import { cp, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promise
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RiparClient, priceOf } from "./client.js";
+import {
+  cmdBazaar,
+  cmdJobs,
+  cmdKeys,
+  cmdOpenApi,
+  cmdRegister,
+  cmdScore,
+  cmdWatch,
+} from "./cli-chain.js";
 import { facilitatorSponsorsFees, resolveFacilitatorNetwork } from "./network.js";
 import { DEFAULT_FACILITATOR, USDC_ASSET_ID, type Network } from "./types.js";
 
@@ -122,6 +131,14 @@ Options:
   -h, --help        Show this`,
 };
 
+COMMAND_HELP.bazaar = "ripar bazaar [query]\n\n  Read the x402 discovery index. Everything in it got there by being PAID\n  for, not by announcing itself.\n\n  --limit <n>   How many to read (default 25, 100 when searching)\n  --json        Raw records\n\n  Search filters ONE page locally: the index has no search route, so an\n  empty result means not-in-what-I-read, never does-not-exist.";
+COMMAND_HELP.keys = "ripar keys [--mnemonic <25 words>]\n\n  Generate an Algorand account, or print the address for a mnemonic you\n  already hold.\n\n  --json   address and mnemonic as JSON\n\n  A generated mnemonic is printed to stdout, so it lands in your scrollback\n  and possibly your shell history. Use it for TestNet, or for a payout\n  address you intend to replace.";
+COMMAND_HELP.score = "ripar score [agentId] [--address <a>] [--domain <d>]\n\n  Read an agent's on-chain reputation.\n\n  --network <n>  testnet (default) or mainnet\n  --json         Raw record\n\n  Every credit required a real transfer from the client's registered address\n  to the agent's. It counts money, not quality: nobody judged the work.";
+COMMAND_HELP.jobs = "ripar jobs\n\n  Work posted to the Validation Registry, with budget AND escrow.\n\n  --limit <n>    How many (default 25)\n  --network <n>  testnet (default) or mainnet\n  --json         Raw records\n\n  A budget is what the client says the work is worth; escrow is what they\n  actually handed over. unfunded means there is nothing to release.";
+COMMAND_HELP.watch = "ripar watch [address]\n\n  Tail settlements to an address as they confirm. Defaults to RIPAR_PAY_TO.\n\n  --network <n>  testnet (default) or mainnet\n  --asset <id>   Asset to watch (defaults to USDC for the network)\n  --once         Poll once and exit\n\n  Anchored to the current round. The indexer returns oldest first, so an\n  unanchored query would replay years of history as if it were new.";
+COMMAND_HELP.register = "ripar register <domain>\n\n  Bind your address to a domain in the Identity Registry.\n\n  --network <n>  testnet (default)\n  --dry-run      Say what would happen, sign nothing\n\n  Needs RIPAR_MNEMONIC. An environment variable and not a flag on purpose:\n  a flag lands in your shell history and in the process list. Register the\n  account your agent names as payTo, or the registry entry will not match\n  the address callers are asked to pay.";
+COMMAND_HELP.openapi = "ripar openapi\n\n  Emit an OpenAPI 3.1 document generated from your endpoint definitions.\n\n  --entry <path>       Built module exporting the agent (default ./dist/agent.js)\n  --base-url <u>       Public URL for the servers block\n  --base-path <p>      Mount prefix, matching serve({ basePath })\n  --include-unlisted   Include endpoints marked listed: false\n\n  This imports and runs your module, so --entry must be compiled output.";
+
 export async function run(argv: string[], io: CliIO): Promise<number> {
   const [command, ...rest] = argv;
   const flags = parseFlags(rest);
@@ -157,6 +174,67 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         return await cmdManifest(flags, io);
       case "doctor":
         return await cmdDoctor(flags, io);
+      case "bazaar":
+        return await cmdBazaar(
+          { query: flags.positional[0], limit: num(flags.values.limit), json: "json" in flags.values },
+          io
+        );
+      case "keys":
+        return cmdKeys({ mnemonic: flags.values.mnemonic, json: "json" in flags.values }, io);
+      case "score":
+        return await cmdScore(
+          {
+            agentId: num(flags.positional[0]),
+            address: flags.values.address,
+            domain: flags.values.domain,
+            network: flags.values.network,
+            json: "json" in flags.values,
+          },
+          io
+        );
+      case "jobs":
+        return await cmdJobs(
+          { network: flags.values.network, limit: num(flags.values.limit), json: "json" in flags.values },
+          io
+        );
+      case "watch": {
+        const address = flags.positional[0] ?? flags.values["pay-to"] ?? process.env.RIPAR_PAY_TO;
+        if (!address) {
+          io.err("ripar watch needs an address: ripar watch <address>, or set RIPAR_PAY_TO.");
+          return 1;
+        }
+        return await cmdWatch(
+          {
+            address,
+            network: flags.values.network,
+            asset: num(flags.values.asset),
+            once: "once" in flags.values,
+          },
+          io
+        );
+      }
+      case "register":
+        return await cmdRegister(
+          {
+            domain: flags.positional[0],
+            network: flags.values.network,
+            dryRun: "dry-run" in flags.values,
+          },
+          io
+        );
+      case "openapi":
+        return await cmdOpenApi(
+          {
+            entry: flags.values.entry,
+            baseUrl: flags.values["base-url"],
+            basePath: flags.values["base-path"],
+            includeUnlisted: "include-unlisted" in flags.values,
+          },
+          io,
+          // Injected so the command is testable without a built agent on disk.
+          (path) =>
+            import(path.startsWith(".") ? new URL(path, `file://${process.cwd()}/`).href : path)
+        );
       default:
         io.err(`Unknown command "${command}".`);
         return 1;
@@ -483,6 +561,14 @@ async function cmdDoctor(flags: Flags, io: CliIO): Promise<number> {
 }
 
 /* ── shared helpers ─────────────────────────────────────────────────────── */
+
+/** A numeric flag, or undefined. Never NaN: a NaN limit silently becomes
+ *  "show nothing", which reads as an empty registry. */
+function num(v: string | undefined): number | undefined {
+  if (v == null) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
 
 type Flags = { positional: string[]; values: Record<string, string>; help: boolean; force: boolean };
 
