@@ -6,12 +6,17 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RiparClient, priceOf } from "./client.js";
 import {
+  cmdAudit,
   cmdBazaar,
+  cmdBench,
+  cmdEscrow,
   cmdJobs,
   cmdKeys,
   cmdOpenApi,
   cmdRegister,
+  cmdRotate,
   cmdScore,
+  cmdTest,
   cmdWatch,
 } from "./cli-chain.js";
 import { facilitatorSponsorsFees, resolveFacilitatorNetwork } from "./network.js";
@@ -41,6 +46,13 @@ Commands:
   quote <url>       Read an endpoint's price — free, no wallet
   manifest <url>    Print an agent's published manifest
   doctor            Check node, facilitator, network and payout address
+
+Checking something that is already deployed:
+  test <url>        End-to-end check of a live agent, one line per check
+  bench <url>       Measure real quote latency: p50, p95, max, cost per call
+  audit <url>       Look for the specific ways a deployed agent breaks
+  escrow <jobId>    What is held for a job, and what may legally happen next
+  rotate <id> <a>   Move an agent's identity to a new controlling address
 
 Options:
   -h, --help        Show help for a command
@@ -139,6 +151,96 @@ COMMAND_HELP.watch = "ripar watch [address]\n\n  Tail settlements to an address 
 COMMAND_HELP.register = "ripar register <domain>\n\n  Bind your address to a domain in the Identity Registry.\n\n  --network <n>  testnet (default)\n  --dry-run      Say what would happen, sign nothing\n\n  Needs RIPAR_MNEMONIC. An environment variable and not a flag on purpose:\n  a flag lands in your shell history and in the process list. Register the\n  account your agent names as payTo, or the registry entry will not match\n  the address callers are asked to pay.";
 COMMAND_HELP.openapi = "ripar openapi\n\n  Emit an OpenAPI 3.1 document generated from your endpoint definitions.\n\n  --entry <path>       Built module exporting the agent (default ./dist/agent.js)\n  --base-url <u>       Public URL for the servers block\n  --base-path <p>      Mount prefix, matching serve({ basePath })\n  --include-unlisted   Include endpoints marked listed: false\n\n  This imports and runs your module, so --entry must be compiled output.";
 
+COMMAND_HELP.test = `ripar test <url> — end-to-end check of a live agent
+
+Usage: ripar test <url> [options]
+
+Reads the manifest, probes every endpoint it advertises, and reports one line
+per check: a real 402, a quote that decodes, a challenge naming an amount AND an
+asset, CORS headers a browser can actually use, and a health route that answers.
+Exits non-zero if any check fails.
+
+The probe is a POST with no body, which is what price discovery looks like — an
+endpoint with an input schema would answer a probe carrying {} with a 400.
+
+Options:
+  --origin <o>      Origin to send on the CORS probe (default a dummy https URL)
+  --json            The checks as JSON
+  -h, --help        Show this`;
+
+COMMAND_HELP.bench = `ripar bench <url> — measure real quote latency
+
+Usage: ripar bench <url> [options]
+
+Times N quote round trips and reports p50, p95, max and the quoted cost per
+call. Quoting is free, so this spends nothing however many times it runs.
+
+A failed request is EXCLUDED and counted, never folded in as a slow one: a
+timeout recorded as a latency is how a p95 comes to flatter an endpoint that was
+simply down.
+
+Options:
+  --n <count>       Round trips (default 10)
+  --body <json>     Body to price, when the endpoint charges by it
+  --file <path>     Same, from a file
+  --json            The measurements as JSON
+  -h, --help        Show this`;
+
+COMMAND_HELP.audit = `ripar audit <url> — look for the ways a deployed agent breaks
+
+Usage: ripar audit <url> [options]
+
+Checks a live agent for the specific problems this project has actually hit:
+missing CORS headers, a quote that cannot be read out of PAYMENT-REQUIRED, a
+manifest payTo the IdentityRegistry has never seen, an endpoint advertised in
+the manifest that 404s, and an agent card claiming an agentId that resolves to
+nothing or to a different address. Every finding says why it matters.
+
+Exits non-zero when there are findings.
+
+Options:
+  --network <n>     testnet (default) or mainnet, for the registry checks
+  --json            Findings as JSON
+  -h, --help        Show this`;
+
+COMMAND_HELP.escrow = `ripar escrow <jobId> — what is held, and what may happen next
+
+Usage: ripar escrow <jobId> [options]
+
+Reads the job (jb_) and its escrow (es_) from the ValidationRegistry and says
+which method is legal next, who may send it, and — where a dispute window is
+involved — when.
+
+A budget is what the client says the work is worth; escrow is what they actually
+handed over. A validated job with no escrow has nothing to release.
+
+Options:
+  --network <n>     testnet (default) or mainnet
+  --json            The job, the escrow and the legal moves as JSON
+  -h, --help        Show this`;
+
+COMMAND_HELP.rotate = `ripar rotate <agentId> <newAddress> — move an identity to a new address
+
+Usage: ripar rotate <agentId> <newAddress> [options]
+
+Composes IdentityRegistry.rotate_address. Signed by the CURRENT controlling
+address, which is the only signature the contract accepts.
+
+rotate_address is NOT on the deployed registry: the contracts in this repo are
+ahead of the chain. --dry-run works and describes exactly what would be sent; a
+real run is refused with that explanation rather than failing inside the AVM on
+an assert nobody can read. The deployed program is checked for the method's own
+selector before anything is signed.
+
+The key comes from RIPAR_MNEMONIC. There is no --mnemonic flag: it would land in
+your shell history and in the process list.
+
+Options:
+  --network <n>     testnet (default) or mainnet
+  --dry-run         Say what would happen, sign nothing
+  --json            The plan (or the result) as JSON
+  -h, --help        Show this`;
+
 export async function run(argv: string[], io: CliIO): Promise<number> {
   const [command, ...rest] = argv;
   const flags = parseFlags(rest);
@@ -219,6 +321,57 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
             domain: flags.positional[0],
             network: flags.values.network,
             dryRun: "dry-run" in flags.values,
+          },
+          io
+        );
+      case "test":
+        return await cmdTest(
+          {
+            url: flags.positional[0],
+            origin: flags.values.origin,
+            json: "json" in flags.values,
+            fetchImpl: io.fetchImpl,
+          },
+          io
+        );
+      case "bench":
+        return await cmdBench(
+          {
+            url: flags.positional[0],
+            n: num(flags.values.n),
+            body: await readBody(flags, io),
+            json: "json" in flags.values,
+            fetchImpl: io.fetchImpl,
+          },
+          io
+        );
+      case "audit":
+        return await cmdAudit(
+          {
+            url: flags.positional[0],
+            network: flags.values.network,
+            json: "json" in flags.values,
+            fetchImpl: io.fetchImpl,
+          },
+          io
+        );
+      case "escrow":
+        return await cmdEscrow(
+          {
+            jobId: num(flags.positional[0]),
+            network: flags.values.network,
+            json: "json" in flags.values,
+          },
+          io
+        );
+      case "rotate":
+        return await cmdRotate(
+          {
+            agentId: num(flags.positional[0]),
+            newAddress: flags.positional[1],
+            network: flags.values.network,
+            dryRun: "dry-run" in flags.values,
+            json: "json" in flags.values,
           },
           io
         );

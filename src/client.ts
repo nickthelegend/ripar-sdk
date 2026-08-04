@@ -4,6 +4,21 @@ import { toClientAvmSigner } from "@x402/avm";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import algosdk from "algosdk";
 import { coversPayment, readBalance, type WalletBalance } from "./balance.js";
+import {
+  IDEMPOTENCY_HEADER,
+  QuoteHistory,
+  driftReport,
+  headerRecord,
+  headerValue,
+  newIdempotencyKey,
+  observationOf,
+  pickAgent,
+  readRetryAfter,
+  type AgentCandidate,
+  type AgentRanking,
+  type DriftReport,
+  type PickAgentOptions,
+} from "./client-extras.js";
 import { readPaymentRequired, readReceiptHeader, usdOfAccept } from "./headers.js";
 import { Limiter } from "./limiter.js";
 import { resolveFacilitator, type FacilitatorChoice } from "./network.js";
@@ -25,6 +40,16 @@ export type ClientOptions = {
   maxPerDay?: string;
   /** Repeat 5xx and transport failures. Never 4xx. Default 3 attempts. */
   retry?: RetryOptions | false;
+  /** Longest wait this client will sit through because a server's `Retry-After`
+   *  asked for it. Default 60s. Past it the call fails saying so rather than
+   *  coming back early — see client-extras.ts. */
+  retryAfterMaxMs?: number;
+  /** Send a generated `Idempotency-Key` on every call, so a retry after a
+   *  dropped connection replays the stored answer instead of paying again.
+   *  ON by default, unlike the other options here: it costs no round trip, a
+   *  server that does not implement it ignores an unknown header, and the
+   *  failure it prevents is paying twice for one piece of work. */
+  idempotency?: boolean;
   /** Reuse a quote for the same URL and body for a few seconds. Off unless
    *  set, because a quote is a price and a stale price is one nobody agreed to
    *  — see quotecache.ts. */
@@ -55,6 +80,10 @@ export type CallResult<T = unknown> = {
   status: number;
   /** How many attempts it took. 1 unless something was retried. */
   attempts?: number;
+  /** Present only when the server answered from its idempotency store rather
+   *  than running the handler again. Proof the retry was free: there is no
+   *  second receipt because there was no second settlement. */
+  replayed?: boolean;
 };
 
 export type QuoteResult =
@@ -142,6 +171,12 @@ export class RiparClient {
   private readonly algodToken?: string;
   private readonly facilitatorUrls: string[];
   private readonly receiptLedger: ReceiptLedger;
+  private readonly retryAfterMaxMs?: number;
+  private readonly idempotency: boolean;
+  /** Every fresh quote this client has taken, per URL. Cache hits are NOT
+   *  recorded: a cached price compared with itself is a sample that proves the
+   *  cache works and says nothing about the seller. */
+  private readonly quoteHistory = new QuoteHistory();
   /** Subscription keys, by endpoint URL. Held in memory only — a key is bearer
    *  credentials for a window the caller already paid for, so writing it to disk
    *  is the caller's decision, not ours. `activeSubscriptions` exposes them. */
@@ -160,6 +195,8 @@ export class RiparClient {
     this.algodToken = opts.algodToken;
     this.facilitatorUrls = opts.facilitatorUrls ?? [];
     this.receiptLedger = new ReceiptLedger(opts.receiptsLimit);
+    this.retryAfterMaxMs = opts.retryAfterMaxMs;
+    this.idempotency = opts.idempotency !== false;
 
     // toClientAvmSigner takes a BASE64 64-byte key, not raw bytes — passing a
     // Uint8Array typechecks as `any` in JS and fails at signing time.
@@ -226,9 +263,14 @@ export class RiparClient {
     // unparsed body means a dynamic price is quoted from `{}` — the same number
     // for every request, which looks like the feature is simply not working.
     const headers =
-      init.body != null ? { "content-type": "application/json", ...(init.headers ?? {}) } : init.headers;
+      init.body != null ? { "content-type": "application/json", ...headerRecord(init.headers) } : init.headers;
     const res = await this.baseFetch(url, { method: "POST", ...init, headers });
     if (res.status !== 402) {
+      // A 2xx really did quote: it answered without asking for payment, so the
+      // price is zero and free-to-paid is drift worth catching. A 4xx or 5xx
+      // quoted nothing at all, and recording it as free would put a price in the
+      // history that nobody was ever offered.
+      if (res.status < 400) this.quoteHistory.record(url, observationOf(0));
       return { paymentRequired: false as const, status: res.status };
     }
     // The requirements travel base64-encoded in PAYMENT-REQUIRED; the body of a
@@ -243,7 +285,61 @@ export class RiparClient {
         /* leave null; the caller still learns payment is required */
       }
     }
+    const picked = pickAccept(requirements);
+    this.quoteHistory.record(url, observationOf(picked?.usd ?? null, picked?.accept));
     return { paymentRequired: true as const, status: 402, requirements };
+  }
+
+  /**
+   * Has this endpoint's price moved since this client first saw it?
+   *
+   * Every quote taken through this client is remembered per URL, and this takes
+   * a fresh one and compares it with the FIRST — not the previous. A supplier
+   * raising a price five percent per call is invisible against the last sample
+   * and unmistakable against the baseline, and an autonomous caller that
+   * silently absorbs a hundredfold rise is the failure this exists to prevent.
+   *
+   * Deliberately bypasses the quote cache: a cached quote compared with itself
+   * reports "unchanged" for a price that has doubled.
+   *
+   * It reports; it does not refuse. Refusing on drift belongs to `maxPrice`,
+   * which is a number the caller chose — a client that started declining
+   * legitimate price changes on its own judgement would be an outage nobody
+   * configured.
+   */
+  async drift(url: string, init: RequestInit = {}): Promise<DriftReport> {
+    // Read the history BEFORE quoting, or the fresh sample becomes its own
+    // baseline and every endpoint reports no drift, forever.
+    const before = this.quoteHistory.observations(url);
+    const fresh = await this.gate(() => this.quoteOnce(url, init));
+    const picked = fresh.paymentRequired ? pickAccept(fresh.requirements) : null;
+    const current = observationOf(fresh.paymentRequired ? (picked?.usd ?? null) : 0, picked?.accept);
+    return driftReport(url, before, current);
+  }
+
+  /** Every price this client has been quoted for a URL, oldest first. */
+  quoteHistoryFor(url: string) {
+    return this.quoteHistory.observations(url);
+  }
+
+  /**
+   * Rank candidate agents by their on-chain reputation.
+   *
+   * The client's network and algod settings are filled in, because a score read
+   * from the wrong network is a score for a different agent with the same id.
+   * Everything else — what it measures, and what it does not — is in
+   * client-extras.ts, and comes back on the ranking as `basis`.
+   */
+  async pickAgent(candidates: AgentCandidate[], opts: PickAgentOptions = {}): Promise<AgentRanking> {
+    return this.gate(() =>
+      pickAgent(candidates, {
+        network: this.network,
+        algodUrl: this.algodUrl,
+        algodToken: this.algodToken,
+        fetchImpl: this.baseFetch,
+        ...opts,
+      })
+    );
   }
 
   /**
@@ -311,6 +407,22 @@ export class RiparClient {
     const attempts = this.retry === false ? 1 : Math.max(1, this.retry.attempts ?? DEFAULT_RETRY.attempts);
     let lastError: RiparError | undefined;
 
+    // ONE key for the whole call, minted before the loop and sent on every
+    // attempt. That is the entire contract: the same key across the retries of
+    // one call is what makes the retry a replay, and a different key per call is
+    // what stops the second call being answered with the first one's result.
+    // Minting it inside the loop would give every attempt its own claim and
+    // settle every one of them; hoisting it out of `call()` would share one key
+    // between two different calls.
+    //
+    // A caller who set the header themselves owns the key — they may be
+    // coordinating retries across processes, where a key this client invented
+    // per call is exactly wrong.
+    const idempotencyKey =
+      this.idempotency && headerValue(init.headers, IDEMPOTENCY_HEADER) == null
+        ? newIdempotencyKey()
+        : undefined;
+
     for (let attempt = 1; attempt <= attempts; attempt++) {
       let res: Response;
       // A held key turns this into a free call — the server checks it before
@@ -334,8 +446,13 @@ export class RiparClient {
           ...init,
           headers: {
             "content-type": "application/json",
+            ...(idempotencyKey ? { [IDEMPOTENCY_HEADER]: idempotencyKey } : {}),
             ...(held ? { "x-ripar-subscription": held.value } : {}),
-            ...(init.headers ?? {}),
+            // LAST, so a caller's own header always wins — including the
+            // Idempotency-Key above, which they may be coordinating elsewhere.
+            // Normalised rather than spread: a `Headers` instance spreads to
+            // nothing and the caller's headers vanish without a word.
+            ...headerRecord(init.headers),
           },
           body: body != null ? JSON.stringify(body) : (init.body as BodyInit | undefined),
         });
@@ -369,17 +486,64 @@ export class RiparClient {
       this.captureSubscription(url, res);
 
       if (res.ok) {
-        return { data: (await res.json()) as T, payment, status: res.status, attempts: attempt };
+        // The server answered out of its idempotency store: the handler did not
+        // run again and nothing settled again, which is the whole point of
+        // sending the key. Surfaced because "this cost nothing" is not visible
+        // anywhere else — a replay carries no receipt.
+        const replayed = res.headers.get("idempotency-replayed") === "true";
+        return {
+          data: (await res.json()) as T,
+          payment,
+          status: res.status,
+          attempts: attempt,
+          ...(replayed ? { replayed: true } : {}),
+        };
       }
 
       const detail = await res.text().catch(() => "");
-      lastError = new RiparError(`Call failed with ${res.status}.`, "call_failed", res.status, detail);
+      // What the SERVER said about coming back, before deciding anything.
+      const advice = readRetryAfter((name) => res.headers.get(name), { capMs: this.retryAfterMaxMs });
+      lastError = new RiparError(
+        `Call failed with ${res.status}.` +
+          (advice.kind === "none" ? "" : ` The server asked for ${(advice.ms / 1_000).toFixed(0)}s before a retry.`),
+        "call_failed",
+        res.status,
+        detail
+      );
 
       // A 4xx is the server saying "this request is wrong". Sending it again
       // changes nothing and may pay again; only 5xx gets another go.
-      if (!isRetryable(res.status) || attempt === attempts) throw lastError;
+      //
+      // 429 is the exception, and only when the server named a Retry-After.
+      // `isRetryable` keeps it out — correctly, as a general rule, because a
+      // client that ignores a rate limit must not repeat the request — but
+      // waiting exactly as long as the server asked is the opposite of ignoring
+      // it. The receipt check is what keeps that safe against a stranger's
+      // server: this SDK's own limiter runs in front of the payment gate so its
+      // 429 settled nothing, but a foreign server may charge and then refuse,
+      // and repeating that pays twice.
+      const repeatable =
+        isRetryable(res.status) || (res.status === 429 && advice.kind !== "none" && !payment);
+      if (!repeatable || attempt === attempts) throw lastError;
 
-      const wait = backoffDelay(attempt, this.retry === false ? {} : this.retry);
+      if (advice.kind === "too-long") {
+        // Not clamped to the cap and retried anyway: coming back before the
+        // server said it would be ready is the same hammering, one step
+        // politer. Stopping and naming both numbers lets the caller decide.
+        throw new RiparError(
+          `${url} answered ${res.status} and asked for ${(advice.ms / 1_000).toFixed(0)}s before a retry ` +
+            `(Retry-After: ${advice.raw}), which is past the ${(advice.capMs / 1_000).toFixed(0)}s this client ` +
+            `will wait. Not retrying — coming back sooner would ignore the header the server sent. ` +
+            `Raise retryAfterMaxMs to wait it out.`,
+          "retry_after_too_long",
+          res.status,
+          detail
+        );
+      }
+
+      // The server's number wins when it gave one. Its own backoff is a guess
+      // about a server it cannot see; Retry-After is that server saying it.
+      const wait = advice.kind === "wait" ? advice.ms : backoffDelay(attempt, this.retry === false ? {} : this.retry);
       await sleep(wait);
     }
 
