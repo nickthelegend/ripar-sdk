@@ -4,10 +4,16 @@ import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactAvmScheme } from "@x402/avm/exact/server";
 import { HTTPFacilitatorClient, type HTTPRequestContext } from "@x402/core/server";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
+import { accessGuard, FreeTier } from "./access.js";
+import { corsGuard } from "./cors.js";
+import { Logger, requestLine } from "./logging.js";
+import { openApiDocument } from "./openapi.js";
+import { WebhookSender } from "./webhooks.js";
 import { manifest } from "./define.js";
 import { resolveFacilitatorNetwork } from "./network.js";
 import { idempotencyGuard, normalizePath, rateLimitGuard, validationGuard } from "./guards.js";
-import { readReceiptHeader } from "./headers.js";
+import { readPaymentHeader, readReceiptHeader } from "./headers.js";
+import { payerFromPaymentHeader } from "./identity.js";
 import { METRICS_CONTENT_TYPE } from "./metrics.js";
 import { normalizePrice, resolvePrice, usdOf } from "./pricing.js";
 import { Runtime } from "./runtime.js";
@@ -43,6 +49,9 @@ type RiparLocals = {
   /** The window minted for this request, pending confirmation that the payment
    *  actually settled. Reconciled in finishRequest. */
   issued?: SubscriptionRecord;
+  /** Set when the free tier waved this request past the gate. The allowance is
+   *  spent in finishRequest rather than here, so a failure does not consume it. */
+  freeFor?: string;
 };
 
 function locals(res: Response): RiparLocals {
@@ -117,12 +126,46 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
     });
   });
 
+  // Before everything, including the drain gate: a browser preflight carries
+  // no payment and asks for no work, so answering it while shutting down is
+  // both harmless and necessary — a 503 here shows up as an opaque CORS error.
+  if (opts.cors) app.use(corsGuard(opts.cors));
+
   app.use(express.json({ limit: "10mb" }));
+
+  const log = opts.logging
+    ? opts.logging instanceof Logger
+      ? opts.logging
+      : new Logger({ base: { agent: agent.handle }, ...opts.logging })
+    : null;
+
+  const webhook = opts.webhook ? new WebhookSender(opts.webhook) : null;
+  const freeTier = opts.freeTier ? new FreeTier(opts.freeTier) : null;
 
   /* ── unpaid routes, registered before the gate so they cannot be gated ──── */
 
-  app.get(`${base}/health`, (_req, res) => {
-    res.json({ ok: true, agent: agent.handle, endpoints: agent.endpoints.length, network });
+  app.get(`${base}/health`, async (_req, res) => {
+    const base_ = { agent: agent.handle, endpoints: agent.endpoints.length, network };
+    const probes = opts.healthChecks;
+    if (!probes) return res.json({ ok: true, ...base_ });
+
+    // A probe that throws is a failed probe, not a failed health check — the
+    // whole point is to answer even when a dependency is down, because "ok:
+    // true regardless" is what makes a load balancer route into a broken pod.
+    const names = Object.keys(probes);
+    const settled = await Promise.all(
+      names.map(async (n) => {
+        try {
+          return { name: n, ok: (await probes[n]()) !== false };
+        } catch (err) {
+          return { name: n, ok: false, error: (err as Error).message };
+        }
+      })
+    );
+    const ok = settled.every((c) => c.ok);
+    res
+      .status(ok ? 200 : 503)
+      .json({ ok, ...base_, checks: Object.fromEntries(settled.map((c) => [c.name, c])) });
   });
 
   // Free, and deliberately so — discovery has to work before payment can.
@@ -136,6 +179,15 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
       },
     });
   });
+
+  if (opts.openapi) {
+    const oa = typeof opts.openapi === "object" ? opts.openapi : {};
+    app.get(`${base}/openapi.json`, (req, res) => {
+      // baseUrl derived from the request unless pinned, so a spec fetched
+      // through a proxy names the host the caller actually reached.
+      res.json(openApiDocument(agent, { basePath: opts.basePath, baseUrl: publicOrigin(req), ...oa }));
+    });
+  }
 
   // Unpaid for the same reason /health is: an agent nobody can scrape is an
   // agent nobody can alert on, and a paid scrape target breaks every collector.
@@ -165,7 +217,13 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
     if (!endpoint) return next();
     locals(res).startedAt = Date.now();
     runtime.enter();
-    const done = () => finishRequest(runtime, res, endpoint, quoteFor(req, endpoint), subStore);
+    const done = () =>
+      finishRequest(runtime, res, endpoint, quoteFor(req, endpoint), subStore, {
+        freeTier,
+        webhook,
+        log,
+        method: req.method,
+      });
     res.on("finish", done);
     // `finish` never fires if the socket dies mid-response; without `close` the
     // in-flight gauge would climb forever and a drain would never complete.
@@ -173,6 +231,7 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
     next();
   });
 
+  if (opts.access) app.use(accessGuard(opts.access, isEndpoint));
   if (runtime.rateLimiter) app.use(rateLimitGuard(runtime.rateLimiter, isEndpoint));
   if (runtime.idempotency) app.use(idempotencyGuard(runtime.idempotency, isEndpoint));
   app.use(validationGuard(byPath));
@@ -250,6 +309,20 @@ export async function createServer(agent: AgentDef, opts: ServeOptions = {}): Pr
   // costs nothing — it must not reach the facilitator at all.
   app.use(async (req, res, next) => {
     const endpoint = byPath.get(normalizePath(req.path));
+
+    // A free call must not reach the facilitator at all, or "free" costs a
+    // round trip and a quote the caller then has to be told to ignore.
+    // Consumed only once the response succeeds — see finishRequest — because
+    // charging an allowance for a 500 spends the trial on a failure.
+    if (freeTier && endpoint) {
+      const payer = payerFromPaymentHeader(readPaymentHeader((n) => req.header(n)));
+      if (freeTier.peek(payer)) {
+        locals(res).freeFor = payer ?? "";
+        res.setHeader("x-ripar-free-remaining", String(freeTier.remaining(payer) - 1));
+        return next();
+      }
+    }
+
     if (!endpoint?.subscription) return gate(req, res, next);
 
     let check;
@@ -330,7 +403,13 @@ function finishRequest(
   res: Response,
   endpoint: EndpointDef,
   quotedUsd: number,
-  subStore?: SubscriptionStore
+  subStore?: SubscriptionStore,
+  extras?: {
+    freeTier?: FreeTier | null;
+    webhook?: WebhookSender | null;
+    log?: Logger | null;
+    method?: string;
+  }
 ) {
   const l = locals(res);
   if (l.startedAt == null) return; // already finished; `close` after `finish`
@@ -363,6 +442,45 @@ function finishRequest(
         }
       );
     }
+  }
+
+  // The free allowance is spent HERE, not at the gate: a call that 500s used
+  // none of the value the trial exists to demonstrate, and burning it on a
+  // failure is the fastest way to make a trial feel broken.
+  const free = l.freeFor;
+  if (free !== undefined && extras?.freeTier && res.statusCode < 400) {
+    extras.freeTier.take(free === "" ? null : free);
+  }
+
+  extras?.log?.info(receipt ? "settled" : "call", {
+    ...requestLine({
+      endpoint: endpoint.name,
+      method: extras.method ?? "POST",
+      status: res.statusCode,
+      ms,
+      settled: Boolean(receipt),
+      usd: receipt ? quotedUsd : undefined,
+      txId: receipt?.txId,
+      payer: receipt?.payer,
+    }),
+    ...(free !== undefined ? { free: true } : {}),
+  });
+
+  // Only real settlements. A free call and a subscription-covered call both
+  // moved no money, and a ledger fed by this must not record them as revenue.
+  if (receipt && extras?.webhook) {
+    extras.webhook.send({
+      type: "settlement",
+      endpoint: endpoint.name,
+      txId: receipt.txId,
+      payer: receipt.payer,
+      amount: receipt.amount,
+      asset: receipt.asset,
+      usd: quotedUsd,
+      status: res.statusCode,
+      ms,
+      at: new Date().toISOString(),
+    });
   }
 
   runtime.leave();
