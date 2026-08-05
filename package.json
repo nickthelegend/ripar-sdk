@@ -55,7 +55,7 @@
     "@types/express": "^5.0.0",
     "@types/node": "^20",
     "typescript": "^5",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20"
