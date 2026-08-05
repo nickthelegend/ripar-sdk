@@ -31,7 +31,25 @@ const merchant = algosdk.mnemonicToSecretKey(cfg.merchant.mnemonic);
 const payer = algosdk.mnemonicToSecretKey(cfg.payer.mnemonic);
 
 const results = [];
-const step = async (name, fn) => {
+
+/**
+ * One step, and what it needed.
+ *
+ * `requires` names an earlier step. Without it, a single failure cascades into
+ * a wall of "Cannot convert undefined to a BigInt" from every step that reads a
+ * variable the failed one never set — which buries the one message that
+ * actually says what went wrong. A skipped step is reported as SKIP, is not
+ * counted as a pass, and names the step it was waiting on.
+ */
+const step = async (name, fn, requires) => {
+  if (requires) {
+    const dep = results.find((r) => r.name === requires);
+    if (!dep || !dep.ok) {
+      results.push({ name, ok: false, skipped: true, detail: `needs "${requires}", which did not pass` });
+      console.log(`  SKIP  ${name}\n          needs "${requires}", which did not pass`);
+      return;
+    }
+  }
   try {
     const detail = await fn();
     results.push({ name, ok: true, detail: detail ?? "" });
@@ -367,7 +385,7 @@ await step("a job can be posted on chain", async () => {
   });
   jobId = Number(r.value);
   return `job ${jobId} (total_jobs was ${next})`;
-});
+}, "the escrow app account can afford another job's box");
 
 await step("escrow takes real custody of the funds", async () => {
   const appAddr = algosdk.getApplicationAddress(VALIDATION).toString();
@@ -399,7 +417,7 @@ await step("escrow takes real custody of the funds", async () => {
   });
   if (Number(held.value) !== PRICE_UNITS) throw new Error(`escrow holds ${held.value}, funded ${PRICE_UNITS}`);
   return `app account ${appAddr.slice(0, 12)}… holds ${held.value} units for job ${jobId}`;
-});
+}, "a job can be posted on chain");
 
 /* ── 9. the escrow lifecycle, through to the worker being paid ──────────── */
 
@@ -416,7 +434,7 @@ await step("the job can be assigned to a registered agent", async () => {
     boxes: [...jobBoxes(), box(IDENTITY, "ag_", u64(CLIENT_ID))],
   });
   return `job ${jobId} assigned to agent ${CLIENT_ID}`;
-});
+}, "a job can be posted on chain");
 
 await step("only the assigned agent may submit the result", async () => {
   // submit_result used to check nobody at all, with a comment saying the SDK
@@ -435,7 +453,7 @@ await step("only the assigned agent may submit the result", async () => {
     return "an unassigned sender was refused by the contract";
   }
   throw new Error("the contract ACCEPTED a result from someone who was not assigned");
-});
+}, "the job can be assigned to a registered agent");
 
 await step("the assigned agent submits its result", async () => {
   await call({
@@ -448,7 +466,7 @@ await step("the assigned agent submits its result", async () => {
     boxes: [...jobBoxes(), box(IDENTITY, "ag_", u64(CLIENT_ID))],
   });
   return "result hash committed on chain";
-});
+}, "the job can be assigned to a registered agent");
 
 await step("a passing verdict writes through to the reputation score", async () => {
   const before = await readScore();
@@ -478,7 +496,7 @@ await step("a passing verdict writes through to the reputation score", async () 
     throw new Error(`agent ${CLIENT_ID}.validated went ${workerBefore.validated} → ${workerAfter.validated}, expected +1`);
   }
   return `agent ${CLIENT_ID}.validated ${workerBefore.validated} → ${workerAfter.validated}; agent ${SERVER_ID} untouched`;
-});
+}, "the assigned agent submits its result");
 
 await step("escrow releases to the worker, and cannot be released twice", async () => {
   const beforeAsa = (await holdings(payer.addr)).asa;
@@ -515,7 +533,7 @@ await step("escrow releases to the worker, and cannot be released twice", async 
     return `worker paid ${moved} units; a second release was refused`;
   }
   throw new Error("escrow released TWICE — the custody ledger can be drained");
-});
+}, "a passing verdict writes through to the reputation score");
 
 /* ── 10. bidding and milestone release ─────────────────────────────────── */
 
@@ -535,7 +553,7 @@ await step("a second job is posted, to bid on", async () => {
     ).value
   );
   return `job ${bidJob}, budget 400000`;
-});
+}, "the escrow app account can afford another job's box");
 
 const bidBox = (job, agent) => {
   const raw = Buffer.concat([u64(job), u64(agent)]);
@@ -569,7 +587,7 @@ await step("an agent can bid, and the pitch is committed by hash only", async ()
   const expected = createHash("sha256").update(pitch).digest("hex");
   if (onChain !== expected) throw new Error("the stored pitch hash is not the digest of the pitch");
   return `agent ${CLIENT_ID} bid 250000, pitch committed as ${onChain.slice(0, 12)}…`;
-});
+}, "a second job is posted, to bid on");
 
 await step("the client cannot bid on their own job", async () => {
   try {
@@ -586,7 +604,7 @@ await step("the client cannot bid on their own job", async () => {
     return "the contract refused a bid from the job's own client";
   }
   throw new Error("a client was allowed to bid on their own job");
-});
+}, "a second job is posted, to bid on");
 
 await step("accepting a bid rewrites the budget to the bid and assigns in one call", async () => {
   await call({
@@ -618,7 +636,7 @@ await step("accepting a bid rewrites the budget to the bid and assigns in one ca
   if (budget !== 250_000) throw new Error(`budget is ${budget} after accepting a 250000 bid`);
   if (assignee !== CLIENT_ID) throw new Error(`job assigned to agent ${assignee}, expected ${CLIENT_ID}`);
   return `budget 400000 → ${budget}, assigned to agent ${assignee} (validator ${validator} = client judges), no separate assign step`;
-});
+}, "an agent can bid, and the pitch is committed by hash only");
 
 await step("a milestone pays part of the escrow and the rest stays held", async () => {
   const sp = await ALGOD.getTransactionParams().do();
@@ -687,7 +705,7 @@ await step("a milestone pays part of the escrow and the rest stays held", async 
   if (moved !== 100_000) throw new Error(`worker received ${moved}, released 100000`);
   if (remaining !== 150_000) throw new Error(`${remaining} remains held, expected 150000`);
   return `paid 100000, ${remaining} still escrowed`;
-});
+}, "accepting a bid rewrites the budget to the bid and assigns in one call");
 
 await close?.();
 
