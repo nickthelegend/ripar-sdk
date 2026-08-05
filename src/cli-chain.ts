@@ -514,6 +514,8 @@ export type AppSnapshot = { globals: Record<string, number>; approvalProgram: Ui
 export type ChainReader = {
   box(appId: number, name: Uint8Array): Promise<Uint8Array | null>;
   app(appId: number): Promise<AppSnapshot>;
+  /** Asset ids an account has opted into, or null if the account does not exist. */
+  assets(address: string): Promise<number[] | null>;
 };
 
 export function algodReader(network: string): ChainReader {
@@ -529,6 +531,21 @@ export function algodReader(network: string): ChainReader {
         globals[Buffer.from(entry.key).toString("utf8")] = Number(entry.value?.uint ?? 0);
       }
       return { globals, approvalProgram: new Uint8Array(app.params?.approvalProgram ?? []) };
+    },
+    assets: async (address) => {
+      try {
+        const acct = await algod.accountInformation(address).do();
+        // algosdk has spelled this both ways across majors, and reading the
+        // wrong one yields NaN — which looks like "opted into nothing" rather
+        // than like an error, so it would silently invert the check below.
+        return (acct.assets ?? []).map((a) => {
+          const raw = a as unknown as Record<string, unknown>;
+          return Number(raw.assetId ?? raw["asset-id"]);
+        });
+      } catch {
+        // A never-funded address 404s. That is a real answer — it holds nothing.
+        return null;
+      }
     },
   };
 }
@@ -793,6 +810,8 @@ export async function cmdAudit(
   }
 
   const endpoints = mf.endpoints ?? [];
+  /** Every ASA this agent asks to be paid in, and which endpoints ask for it. */
+  const quotedAssets = new Map<number, string[]>();
   for (const e of endpoints) {
     const url = e.url ?? `${base}/${e.name}`;
     const label = pathOf(url);
@@ -841,6 +860,10 @@ export async function cmdAudit(
       });
     }
 
+    const asset = Number(probe.accept?.asset ?? 0);
+    // 0 is ALGO, which needs no opt-in. Everything else does.
+    if (asset > 0) quotedAssets.set(asset, [...(quotedAssets.get(asset) ?? []), label]);
+
     // 3. CORS.
     const allowOrigin = probe.headers?.["access-control-allow-origin"];
     const exposed = (probe.headers?.["access-control-expose-headers"] ?? "").toLowerCase();
@@ -865,10 +888,52 @@ export async function cmdAudit(
     }
   }
 
-  // 4. payTo against the IdentityRegistry.
+  // 4. payTo must be able to RECEIVE what it asks for.
+  //
+  // On Algorand an ASA transfer to an account that has not opted in is rejected
+  // at consensus. An agent quoting an asset its payTo does not hold is asking
+  // for a payment that cannot land: the caller signs, submits, and the network
+  // refuses it. Nothing on the HTTP side reports this — the 402 is well-formed,
+  // the facilitator accepts the quote, and the failure happens after the money
+  // leaves. api.ripar.io shipped exactly this, quoting real TestNet USDC into
+  // an address opted into only its own test asset, and it went unnoticed
+  // because zero payments succeeding looks identical to zero payments tried.
   const reader = args.reader ?? algodReader(network);
   const apps = REGISTRY[network];
   const payTo = mf.payTo;
+
+  if (payTo && /^[A-Z2-7]{58}$/.test(payTo) && quotedAssets.size > 0) {
+    const held = await reader.assets(payTo);
+    if (held == null) {
+      findings.push({
+        code: "payto_nonexistent",
+        title: `payTo ${payTo.slice(0, 10)}… does not exist on ${network}`,
+        detail: `The account has never been funded, so it holds nothing and is opted into nothing.`,
+        why:
+          `Every quote this agent sends names an address the network does not know. No payment to it can ` +
+          `settle, on any asset.`,
+      });
+    } else {
+      for (const [asset, labels] of quotedAssets) {
+        if (held.includes(asset)) {
+          passed.push(`settlement: payTo is opted into asset ${asset}, so a payment can land`);
+          continue;
+        }
+        findings.push({
+          code: "payto_not_optedin",
+          title: `payTo is not opted into asset ${asset}, which it quotes on ${labels.join(", ")}`,
+          detail:
+            `${payTo.slice(0, 10)}… holds ${held.length ? `asset(s) ${held.join(", ")}` : "no assets"}, ` +
+            `and asset ${asset} is not among them.`,
+          why:
+            `An ASA transfer to a non-opted-in account fails at consensus. The 402 is well-formed and the ` +
+            `facilitator will accept it, so the caller signs a payment the network then rejects — and the ` +
+            `agent never learns, because a payment that cannot land never arrives to be counted.`,
+        });
+      }
+    }
+  }
+
   let registeredId = 0;
   if (!apps?.identity) {
     passed.push(`identity: the registries are not deployed on ${network}, so payTo could not be checked`);

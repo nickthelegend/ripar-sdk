@@ -981,7 +981,14 @@ describe("ripar bench", () => {
 });
 
 /** A registry that answers from canned boxes. */
-function readerStub(boxes: Record<string, string>, globals: Record<string, number> = {}, program = ""): ChainReader {
+function readerStub(
+  boxes: Record<string, string>,
+  globals: Record<string, number> = {},
+  program = "",
+  /** Assets payTo is opted into. Defaults to the one these fixtures quote, so
+   *  the opt-in check stays quiet in tests that are about something else. */
+  optedIn: number[] | null = [10_458_941]
+): ChainReader {
   return {
     box: async (appId, name) => {
       const key = `${appId}:${Buffer.from(name).toString("hex")}`;
@@ -989,6 +996,7 @@ function readerStub(boxes: Record<string, string>, globals: Record<string, numbe
       return hex ? new Uint8Array(Buffer.from(hex, "hex")) : null;
     },
     app: async () => ({ globals, approvalProgram: new Uint8Array(Buffer.from(program, "hex")) }),
+    assets: async () => optedIn,
   };
 }
 
@@ -1017,6 +1025,44 @@ describe("ripar audit", () => {
     expect(c.stdout()).toContain("No findings");
     expect(c.stdout()).toContain("payTo is agent 1");
     expect(c.stdout()).toContain('domain "ripar-agent.vercel.app"');
+  });
+
+  /** The same registered agent, but payTo holds something other than what it
+   *  quotes — which is the shape api.ripar.io actually shipped. */
+  const boxes = {
+    [boxRef(IDENTITY, "ad_", algosdk.decodeAddress(LIVE_PAY_TO).publicKey)]: "0000000000000001",
+    [boxRef(IDENTITY, "ag_", 1)]: REAL_AGENT_BOX,
+  };
+
+  it("reports a payTo that cannot receive the asset it quotes", async () => {
+    // Quotes 10458941 (real TestNet USDC); opted into 768547363 only. An ASA
+    // transfer to a non-opted-in account is rejected at consensus, so the
+    // caller signs a payment the network then refuses.
+    const wrongAsset = readerStub(boxes, {}, "", [768_547_363]);
+    const stub = agentStub({ health: "/health" });
+    const c = capture();
+    expect(await cmdAudit({ url: stub.base, json: true, fetchImpl: stub.impl, reader: wrongAsset }, c.io)).toBe(1);
+    const body = JSON.parse(c.stdout()) as { findings: { code: string; title: string; why: string }[] };
+    const finding = body.findings.find((f) => f.code === "payto_not_optedin")!;
+    expect(finding, "the opt-in mismatch was not reported").toBeTruthy();
+    expect(finding.title).toContain("10458941");
+    expect(finding.why).toMatch(/rejected at consensus|fails at consensus/i);
+  });
+
+  it("says so when payTo is opted into what it quotes", async () => {
+    const stub = agentStub({ health: "/health" });
+    const c = capture();
+    expect(await cmdAudit({ url: stub.base, fetchImpl: stub.impl, reader: registered }, c.io)).toBe(0);
+    expect(c.stdout()).toContain("opted into asset 10458941");
+  });
+
+  it("reports a payTo the network has never seen", async () => {
+    const missing = readerStub(boxes, {}, "", null);
+    const stub = agentStub({ health: "/health" });
+    const c = capture();
+    expect(await cmdAudit({ url: stub.base, json: true, fetchImpl: stub.impl, reader: missing }, c.io)).toBe(1);
+    const body = JSON.parse(c.stdout()) as { findings: { code: string }[] };
+    expect(body.findings.some((f) => f.code === "payto_nonexistent")).toBe(true);
   });
 
   it("reports missing CORS, and says what it costs", async () => {
