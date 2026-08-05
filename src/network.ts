@@ -24,7 +24,7 @@ export async function resolveFacilitatorNetwork(
   facilitatorUrl: string = DEFAULT_FACILITATOR,
   fetchImpl: typeof fetch = globalThis.fetch
 ): Promise<string> {
-  const want = CAIP2[network] as string;
+  const want = (CAIP2 as Record<string, string>)[network];
   const url = `${facilitatorUrl.replace(/\/$/, "")}/supported`;
 
   let kinds: SupportedKind[];
@@ -45,10 +45,27 @@ export async function resolveFacilitatorNetwork(
     (k) => k.scheme === "exact" && typeof k.network === "string" && k.network.startsWith("algorand:")
   );
 
-  // Prefer the id whose reference the package constant is a prefix of; that is
-  // the same chain expressed at full length.
-  const match =
-    exactAvm.find((k) => k.network!.startsWith(want) || want.startsWith(k.network!)) ?? undefined;
+  // localnet has no constant to match: its genesis hash is generated per
+  // container, so whatever the facilitator advertises IS the chain. Taking the
+  // single Algorand kind is not a loosened check — there is nothing stricter
+  // available, and a facilitator offering two local chains is a misconfiguration
+  // worth naming rather than silently picking from.
+  let match: SupportedKind | undefined;
+  if (network === "localnet") {
+    if (exactAvm.length > 1) {
+      throw new RiparError(
+        `Facilitator ${facilitatorUrl} advertises more than one Algorand network ` +
+          `(${exactAvm.map((k) => k.network).join(", ")}), so localnet is ambiguous. ` +
+          `Point at a facilitator serving one chain.`,
+        "network_ambiguous"
+      );
+    }
+    match = exactAvm[0];
+  } else {
+    // Prefer the id whose reference the package constant is a prefix of; that is
+    // the same chain expressed at full length.
+    match = exactAvm.find((k) => k.network!.startsWith(want) || want.startsWith(k.network!));
+  }
 
   if (!match?.network) {
     const seen = exactAvm.map((k) => k.network).join(", ") || "none";
@@ -101,7 +118,7 @@ export async function resolveFacilitator(
 ): Promise<FacilitatorChoice> {
   const doFetch = opts.fetchImpl ?? globalThis.fetch;
   const timeoutMs = opts.timeoutMs ?? 5_000;
-  const want = opts.network ? (CAIP2[opts.network] as string) : undefined;
+  const want = opts.network ? (CAIP2 as Record<string, string>)[opts.network] : undefined;
   const tried: FacilitatorProbe[] = [];
 
   if (!urls.length) {
@@ -178,7 +195,7 @@ export async function facilitatorSponsorsFees(
   try {
     const res = await fetchImpl(`${facilitatorUrl.replace(/\/$/, "")}/supported`);
     const body = (await res.json()) as { kinds?: SupportedKind[] };
-    const want = CAIP2[network] as string;
+    const want = (CAIP2 as Record<string, string>)[network];
     const k = (body.kinds ?? []).find(
       (x) =>
         x.scheme === "exact" &&

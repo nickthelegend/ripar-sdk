@@ -15,7 +15,7 @@
 import algosdk from "algosdk";
 import fs from "node:fs";
 
-const cfg = JSON.parse(fs.readFileSync("/tmp/testnet-e2e.json", "utf8"));
+const cfg = JSON.parse(fs.readFileSync(process.env.RIPAR_E2E_CONFIG ?? "/tmp/testnet-e2e.json", "utf8"));
 /* The LIVE IdentityRegistry. This read 768_547_159 until 2026-08-05, which is
    the generation before last — superseded twice over. A dead registry does not
    error: it answers, with nothing. So this script would have registered against
@@ -30,7 +30,11 @@ const cfg = JSON.parse(fs.readFileSync("/tmp/testnet-e2e.json", "utf8"));
 const IDENTITY_APP = 768_633_998;
 const DOMAIN = "ripar-agent.vercel.app";
 
-const algod = new algosdk.Algodv2("", "https://testnet-api.algonode.cloud", "");
+const algod = new algosdk.Algodv2(
+  process.env.ALGOD_TOKEN ?? "",
+  process.env.ALGOD_URL ?? "https://testnet-api.algonode.cloud",
+  process.env.ALGOD_PORT ?? ""
+);
 const acct = algosdk.mnemonicToSecretKey(cfg.merchant.mnemonic);
 const addr = acct.addr.toString();
 

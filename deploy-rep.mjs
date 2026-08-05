@@ -1,6 +1,10 @@
 import algosdk from "algosdk";
 import fs from "node:fs";
-const algod = new algosdk.Algodv2("", "https://testnet-api.algonode.cloud", "");
+const algod = new algosdk.Algodv2(
+  process.env.ALGOD_TOKEN ?? "",
+  process.env.ALGOD_URL ?? "https://testnet-api.algonode.cloud",
+  process.env.ALGOD_PORT ?? ""
+);
 const acct = algosdk.mnemonicToSecretKey(JSON.parse(fs.readFileSync("/tmp/mainnet-payer.json","utf8")).mnemonic);
 const spec = JSON.parse(fs.readFileSync("/Volumes/Extreme SSD/Projects/ripar/ripar-contracts/artifacts/reputation_registry/ReputationRegistry.arc56.json","utf8"));
 const approval = new Uint8Array(Buffer.from((await algod.compile(Buffer.from(fs.readFileSync("/Volumes/Extreme SSD/Projects/ripar/ripar-contracts/artifacts/reputation_registry/ReputationRegistry.approval.teal"))).do()).result,"base64"));

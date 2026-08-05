@@ -160,7 +160,14 @@ export function headerRecord(headers: HeadersInit | undefined): Record<string, s
 
 /** The deployed ReputationRegistry. Zero on MainNet because nothing is deployed
  *  there — a guessed id would read a stranger's app and rank on their numbers. */
-export const REPUTATION_APP: Record<Network, number> = { testnet: 768_633_999, mainnet: 0 };
+export const REPUTATION_APP: Record<Network, number> = {
+  testnet: 768_633_999,
+  mainnet: 0,
+  // Zero for the same reason as mainnet, and more so: app ids are per-chain and
+  // a LocalNet is recreated from scratch, so any constant here would be stale
+  // the first time somebody resets it. Pass the id you just deployed.
+  localnet: 0,
+};
 
 /** BoxMap(UInt64, Score, key_prefix=b"sc_"). */
 export const SCORE_BOX_PREFIX = "sc_";

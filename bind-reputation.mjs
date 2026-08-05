@@ -12,7 +12,11 @@ const settle = JSON.parse(fs.readFileSync("/tmp/last-settlement.json", "utf8"));
 const acct = algosdk.mnemonicToSecretKey(
   JSON.parse(fs.readFileSync("/tmp/mainnet-payer.json", "utf8")).mnemonic
 );
-const algod = new algosdk.Algodv2("", "https://testnet-api.algonode.cloud", "");
+const algod = new algosdk.Algodv2(
+  process.env.ALGOD_TOKEN ?? "",
+  process.env.ALGOD_URL ?? "https://testnet-api.algonode.cloud",
+  process.env.ALGOD_PORT ?? ""
+);
 const signer = algosdk.makeBasicAccountTransactionSigner(acct);
 const enc = new TextEncoder();
 

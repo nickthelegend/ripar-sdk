@@ -23,10 +23,15 @@ import { defineAgent, defineEndpoint } from "./dist/define.js";
 
 const CONFIG = process.env.RIPAR_E2E_CONFIG ?? "/tmp/testnet-e2e.json";
 const FACILITATOR = process.env.FACILITATOR_URL ?? "https://facilitator.goplausible.xyz";
-const ALGOD = new algosdk.Algodv2("", "https://testnet-api.algonode.cloud", "");
+const ALGOD = new algosdk.Algodv2(
+  process.env.ALGOD_TOKEN ?? "",
+  process.env.ALGOD_URL ?? "https://testnet-api.algonode.cloud",
+  process.env.ALGOD_PORT ?? ""
+);
 
 const cfg = JSON.parse(fs.readFileSync(CONFIG, "utf8"));
 const ASSET = Number(cfg.assetId);
+const NETWORK = cfg.network ?? "testnet";
 const merchant = algosdk.mnemonicToSecretKey(cfg.merchant.mnemonic);
 const payer = algosdk.mnemonicToSecretKey(cfg.payer.mnemonic);
 
@@ -66,7 +71,7 @@ const holdings = async (addr) => {
   return { algo: Number(a.amount), asa: h ? Number(h.amount) : null };
 };
 
-console.log(`\n  Ripar end-to-end — TestNet, asset ${ASSET}, facilitator ${FACILITATOR}\n`);
+console.log(`\n  Ripar end-to-end — ${NETWORK}, asset ${ASSET}, facilitator ${FACILITATOR}\n`);
 
 /* ── 0. preflight ───────────────────────────────────────────────────────── */
 
@@ -90,7 +95,7 @@ await step("createServer boots against the live facilitator", async () => {
     name: "Ripar E2E",
     handle: "ripar-e2e",
     payTo: merchant.addr.toString(),
-    network: "testnet",
+    network: NETWORK,
     endpoints: [
       defineEndpoint({
         name: "summarize",
@@ -102,7 +107,7 @@ await step("createServer boots against the live facilitator", async () => {
     ],
   });
   const app = await createServer(agent, {
-    network: "testnet",
+    network: NETWORK,
     payTo: merchant.addr.toString(),
     facilitatorUrl: FACILITATOR,
     logging: { level: "error", write: () => {} },
@@ -189,7 +194,7 @@ await step("that transaction is really on chain, for the quoted amount", async (
   if (!settleTxid) throw new Error("no txid from the previous step");
   let found = null;
   for (let i = 0; i < 10 && !found; i++) {
-    const res = await fetch(`https://testnet-idx.algonode.cloud/v2/transactions/${settleTxid}`);
+    const res = await fetch(`${process.env.INDEXER_URL ?? "https://testnet-idx.algonode.cloud"}/v2/transactions/${settleTxid}`);
     if (res.ok) found = (await res.json()).transaction;
     else await new Promise((r) => setTimeout(r, 2000));
   }
@@ -214,12 +219,20 @@ await step("the merchant's balance went up by exactly the quoted price", async (
 
 /* ── 7. that payment credits reputation ─────────────────────────────────── */
 
-const REG = JSON.parse(
-  fs.readFileSync("/Volumes/Extreme SSD/Projects/ripar/ripar-contracts/DEPLOYED.json", "utf8")
-).registries;
-const IDENTITY = REG.IdentityRegistry.appId;
-const REPUTATION = REG.ReputationRegistry.appId;
-const VALIDATION = REG.ValidationRegistry.appId;
+// The config the deploy just wrote wins; DEPLOYED.json is the fallback for a
+// TestNet run that predates it. An absolute path lived here, which made this
+// file runnable on exactly one machine.
+let IDENTITY, REPUTATION, VALIDATION;
+if (cfg.registries) {
+  ({ identity: IDENTITY, reputation: REPUTATION, validation: VALIDATION } = cfg.registries);
+} else {
+  const REG = JSON.parse(
+    fs.readFileSync(new URL("../ripar-contracts/DEPLOYED.json", import.meta.url), "utf8")
+  ).registries;
+  IDENTITY = REG.IdentityRegistry.appId;
+  REPUTATION = REG.ReputationRegistry.appId;
+  VALIDATION = REG.ValidationRegistry.appId;
+}
 const SERVER_ID = 1; // merchant
 const CLIENT_ID = 2; // payer
 

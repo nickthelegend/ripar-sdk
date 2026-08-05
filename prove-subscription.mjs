@@ -31,8 +31,12 @@ import fs from "node:fs";
 import express from "express";
 import { MemorySubscriptionStore, checkSubscription, issue, readKey } from "./dist/subscriptions.js";
 
-const cfg = JSON.parse(fs.readFileSync("/tmp/testnet-e2e.json", "utf8"));
-const algod = new algosdk.Algodv2("", "https://testnet-api.algonode.cloud", "");
+const cfg = JSON.parse(fs.readFileSync(process.env.RIPAR_E2E_CONFIG ?? "/tmp/testnet-e2e.json", "utf8"));
+const algod = new algosdk.Algodv2(
+  process.env.ALGOD_TOKEN ?? "",
+  process.env.ALGOD_URL ?? "https://testnet-api.algonode.cloud",
+  process.env.ALGOD_PORT ?? ""
+);
 const payer = algosdk.mnemonicToSecretKey(cfg.payer.mnemonic);
 const MERCHANT = cfg.merchant.addr;
 const ASSET = cfg.assetId;

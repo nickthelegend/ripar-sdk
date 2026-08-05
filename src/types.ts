@@ -16,18 +16,34 @@ import {
   USDC_TESTNET_ASA_ID,
 } from "@x402/avm";
 
-export type Network = "mainnet" | "testnet";
+export type Network = "mainnet" | "testnet" | "localnet";
 
+/**
+ * The CAIP-2 id each network is known by, where one can be known in advance.
+ *
+ * `localnet` is deliberately absent. A LocalNet's genesis hash is generated when
+ * the container is created, so its CAIP-2 id differs per machine and per reset —
+ * there is no constant to compare against, and inventing one would mean refusing
+ * to talk to the very chain the developer is running. On localnet the
+ * facilitator is the only source of truth, and resolveFacilitatorNetwork takes
+ * what it advertises.
+ */
 export const CAIP2 = {
   mainnet: ALGORAND_MAINNET_CAIP2,
   testnet: ALGORAND_TESTNET_CAIP2,
-} as const satisfies Record<Network, `${string}:${string}`>;
+} as const satisfies Record<Exclude<Network, "localnet">, `${string}:${string}`>;
 
 /** USDC as an Algorand ASA, taken from the mechanism package so the two cannot
- *  drift. Different id per network — the wrong one silently never settles. */
+ *  drift. Different id per network — the wrong one silently never settles.
+ *
+ *  Asset ids are per-chain, so a fresh LocalNet has no USDC until something
+ *  creates one. `0` is not an id; it means "there is no default here, price the
+ *  endpoint with an explicit `{ asset, amount, decimals }`" — and a dollar price
+ *  on localnet fails loudly rather than quoting an asset that does not exist. */
 export const USDC_ASSET_ID: Record<Network, number> = {
   mainnet: Number(USDC_MAINNET_ASA_ID),
   testnet: Number(USDC_TESTNET_ASA_ID),
+  localnet: 0,
 };
 
 export const DEFAULT_FACILITATOR = "https://facilitator.goplausible.xyz";
@@ -43,6 +59,10 @@ export const DEFAULT_FACILITATOR = "https://facilitator.goplausible.xyz";
 export const DEFAULT_ALGOD: Record<Network, string> = {
   mainnet: "https://mainnet-api.algonode.cloud",
   testnet: "https://testnet-api.algonode.cloud",
+  // The AlgoKit LocalNet default. Unauthenticated like the others, but for the
+  // opposite reason: it is a node on this machine, holding a chain that exists
+  // only while the container does.
+  localnet: "http://localhost:4001",
 };
 
 /** A JSON Schema fragment describing the request body. Published to discovery,

@@ -19,7 +19,11 @@ const A2A = `${process.env.RIPAR_AGENT_URL ?? "https://api.ripar.io"}/a2a`;
 const CONFIG = process.env.RIPAR_E2E_CONFIG ?? "/tmp/testnet-e2e.json";
 const REGISTRY_ASSET = 10_458_941;
 
-const algod = new algosdk.Algodv2("", "https://testnet-api.algonode.cloud", "");
+const algod = new algosdk.Algodv2(
+  process.env.ALGOD_TOKEN ?? "",
+  process.env.ALGOD_URL ?? "https://testnet-api.algonode.cloud",
+  process.env.ALGOD_PORT ?? ""
+);
 const payer = algosdk.mnemonicToSecretKey(JSON.parse(fs.readFileSync(CONFIG, "utf8")).payer.mnemonic);
 
 const results = [];

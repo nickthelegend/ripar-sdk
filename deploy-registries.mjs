@@ -4,7 +4,11 @@ import fs from "node:fs";
 const cfg = JSON.parse(fs.readFileSync("/tmp/ripar-testnet-2.json", "utf8"));
 const payer = JSON.parse(fs.readFileSync("/tmp/mainnet-payer.json", "utf8"));
 const deployer = algosdk.mnemonicToSecretKey(payer.mnemonic);
-const algod = new algosdk.Algodv2("", "https://testnet-api.algonode.cloud", "");
+const algod = new algosdk.Algodv2(
+  process.env.ALGOD_TOKEN ?? "",
+  process.env.ALGOD_URL ?? "https://testnet-api.algonode.cloud",
+  process.env.ALGOD_PORT ?? ""
+);
 
 const info = await algod.accountInformation(deployer.addr.toString()).do();
 console.log("  deployer:", deployer.addr.toString());
