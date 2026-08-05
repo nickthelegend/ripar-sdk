@@ -38,7 +38,9 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "verify:e2e": "node verify-e2e.mjs",
-    "verify:live": "node verify-live-agent.mjs"
+    "verify:live": "node verify-live-agent.mjs",
+    "verify:a2a": "node verify-a2a-live.mjs",
+    "verify:all": "npm run verify:e2e && npm run verify:live && npm run verify:a2a"
   },
   "dependencies": {
     "@algorandfoundation/algokit-utils": "^9.1.0",
