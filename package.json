@@ -36,7 +36,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:e2e": "node verify-e2e.mjs"
   },
   "dependencies": {
     "@algorandfoundation/algokit-utils": "^9.1.0",
