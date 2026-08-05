@@ -142,14 +142,13 @@ check("the quote names an amount and an asset", !!accept?.amount && !!accept?.as
 /* ── 5. is the challenge actually signable? ───────────────────────────── */
 console.log("\n5. building the payment the challenge asks for");
 
-/* Honest limit, stated rather than papered over: the facilitator quotes real
-   TestNet USDC (10458941) and this payer holds none — the TestNet USDC faucet
-   is login-gated, which is why the rest of this work uses a self-minted
-   stand-in (768547363). So the transfer is built and signed here, proving the
-   challenge is well-formed and the caller can act on it, but not broadcast.
-   The settlement half is proved separately and for real, against the chain:
-   prove-subscription.mjs and testnet-e2e-pay.mjs both move money and read the
-   balances back. */
+/* Built and signed but NOT broadcast, which is the honest scope of this file:
+   it proves the challenge is well-formed and that a caller can act on it,
+   nothing more. Broadcasting here would settle a second payment for a call
+   already answered.
+   The settlement half is proved separately and for real, against the chain —
+   verify-live-agent.mjs and verify-a2a-live.mjs both pay the deployed agent in
+   circulating TestNet USDC (10458941) and read the balances back. */
 const sp = await algod.getTransactionParams().do();
 const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
   sender: payer.addr,
@@ -163,7 +162,7 @@ const signedBytes = txn.signTxn(payer.sk);
 const decoded = algosdk.decodeSignedTransaction(signedBytes);
 
 console.log("   asset quoted :", accept.asset, "(TestNet USDC)");
-console.log("   payer holds  :", "768547363 (rUSDC stand-in) only");
+console.log("   payer holds  :", "10458941 (USDC stand-in) only");
 console.log("   signed txn   :", txn.txID());
 check(
   "the challenge produces a valid, signed transfer",

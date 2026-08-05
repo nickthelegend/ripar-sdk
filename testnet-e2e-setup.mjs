@@ -38,30 +38,44 @@ for (const a of [payer, merchant]) {
 }
 console.log("  funded payer + merchant with 1 ALGO each");
 
-// 6 decimals and the USDC unit name so amounts read identically to MainNet.
-const sp = await algod.getTransactionParams().do();
-const { conf } = await send(algosdk.makeAssetCreateTxnWithSuggestedParamsFromObject({
-  sender: funder.addr.toString(), total: 1_000_000_000n, decimals: 6,
-  defaultFrozen: false, unitName: "rUSDC", assetName: "Ripar Test USDC",
-  manager: funder.addr.toString(), reserve: funder.addr.toString(),
-  suggestedParams: sp,
-}), funder.sk);
-const assetId = Number(conf.assetIndex);
-console.log("  minted test asset:", assetId, "(stand-in for USDC, 6 decimals)");
+/**
+ * Circulating TestNet USDC, not a mint of our own.
+ *
+ * This script used to create an ASA with six decimals and the unit name
+ * "USDC", as a stand-in, because the TestNet USDC faucet is login-gated. That
+ * stand-in was the problem: every amount it produced was a near-homonym of a
+ * real one, the registries got bootstrapped to it — and `bootstrap` is
+ * one-shot — so correcting it later cost a full redeploy. Naming a token USDC
+ * does not make it USDC.
+ *
+ * Both accounts are opted in here; the balance has to come from the faucet,
+ * which is a human step and stays one.
+ */
+const ASSET_ID = 10_458_941;
 
 for (const a of [payer, merchant]) {
+  const info = await algod.accountInformation(a.addr.toString()).do();
+  const holds = (info.assets ?? []).some((x) => Number(x.assetId ?? x["asset-id"]) === ASSET_ID);
+  if (holds) continue;
   const p = await algod.getTransactionParams().do();
   await send(algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
     sender: a.addr.toString(), receiver: a.addr.toString(), amount: 0,
-    assetIndex: assetId, suggestedParams: p,
+    assetIndex: ASSET_ID, suggestedParams: p,
   }), a.sk);
 }
-const p2 = await algod.getTransactionParams().do();
-await send(algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
-  sender: funder.addr.toString(), receiver: payer.addr.toString(),
-  amount: 50_000_000, assetIndex: assetId, suggestedParams: p2,
-}), funder.sk);
-console.log("  payer holds 50.00 rUSDC");
+const assetId = ASSET_ID;
+console.log(`  both accounts opted in to USDC (${ASSET_ID})`);
+
+const payerInfo = await algod.accountInformation(payer.addr.toString()).do();
+const held = (payerInfo.assets ?? []).find((x) => Number(x.assetId ?? x["asset-id"]) === ASSET_ID);
+const balance = held ? Number(held.amount) / 1e6 : 0;
+console.log(`  payer holds ${balance.toFixed(2)} USDC`);
+if (balance <= 0) {
+  console.log("");
+  console.log("  NOTE: the payer holds no USDC, so nothing here can settle yet.");
+  console.log("  Fund it from https://faucet.circle.com (Algorand TestNet):");
+  console.log(`    ${payer.addr.toString()}`);
+}
 
 fs.writeFileSync("/tmp/testnet-e2e.json", JSON.stringify({
   assetId,

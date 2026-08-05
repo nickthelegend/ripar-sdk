@@ -1035,10 +1035,12 @@ describe("ripar audit", () => {
   };
 
   it("reports a payTo that cannot receive the asset it quotes", async () => {
-    // Quotes 10458941 (real TestNet USDC); opted into 768547363 only. An ASA
-    // transfer to a non-opted-in account is rejected at consensus, so the
+    // Quotes 10458941 (TestNet USDC); opted into 31566704 (MAINNET USDC) only.
+    // That is the realistic shape of this mistake — the same token on the wrong
+    // network, so every name and symbol matches and only the id does not. An
+    // ASA transfer to a non-opted-in account is rejected at consensus, so the
     // caller signs a payment the network then refuses.
-    const wrongAsset = readerStub(boxes, {}, "", [768_547_363]);
+    const wrongAsset = readerStub(boxes, {}, "", [31_566_704]);
     const stub = agentStub({ health: "/health" });
     const c = capture();
     expect(await cmdAudit({ url: stub.base, json: true, fetchImpl: stub.impl, reader: wrongAsset }, c.io)).toBe(1);

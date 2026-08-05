@@ -29,7 +29,7 @@ const deployed = JSON.parse(
 );
 const IDENTITY = deployed.registries.IdentityRegistry.appId;
 const REPUTATION = deployed.registries.ReputationRegistry.appId;
-const REGISTRY_ASSET = 768_547_363;
+const REGISTRY_ASSET = 10_458_941;
 const SERVER_ID = 1;
 const CLIENT_ID = 2;
 

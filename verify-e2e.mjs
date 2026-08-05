@@ -5,7 +5,7 @@
  * one createServer, but both stop at the network boundary: the facilitator is
  * doubled and nothing settles. This is the file that spends real money.
  *
- * It settles in Ripar Test USDC (768547363) rather than TestNet USDC, because
+ * It settles in USDC (10458941) rather than TestNet USDC, because
  * that is the asset the deployed ReputationRegistry is pinned to —
  * accept_feedback asserts `payment.xfer_asset.id == self.usdc_asset`, and
  * bootstrap is one-shot, so nothing can re-point it. Settling in USDC here
@@ -95,7 +95,7 @@ await step("createServer boots against the live facilitator", async () => {
       defineEndpoint({
         name: "summarize",
         description: "Summarise text.",
-        price: { asset: String(ASSET), amount: "0.01", decimals: 6, symbol: "rUSDC" },
+        price: { asset: String(ASSET), amount: "0.01", decimals: 6, symbol: "USDC" },
         input: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
         handler: ({ body }) => ({ summary: String(body?.text ?? "").slice(0, 40) }),
       }),

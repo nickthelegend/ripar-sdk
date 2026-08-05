@@ -21,8 +21,8 @@ const bal = async (a) => {
 };
 
 console.log("── balances before ──");
-console.log("  payer   :", await bal(payer.addr.toString()), "rUSDC");
-console.log("  merchant:", await bal(cfg.merchant.addr), "rUSDC");
+console.log("  payer   :", await bal(payer.addr.toString()), "USDC");
+console.log("  merchant:", await bal(cfg.merchant.addr), "USDC");
 
 const app = express();
 app.use(express.json());
@@ -68,7 +68,7 @@ console.log("\n── 1. unpaid ──");
 let r = await fetch(URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 console.log("  status:", r.status);
 const acc = (await r.json()).accepts[0];
-console.log("  quoted:", Number(acc.amount) / 1e6, "rUSDC → ", acc.payTo.slice(0, 12) + "…");
+console.log("  quoted:", Number(acc.amount) / 1e6, "USDC → ", acc.payTo.slice(0, 12) + "…");
 
 console.log("\n── 2. sign ──");
 const sp = await algod.getTransactionParams().do();
@@ -81,7 +81,7 @@ const header = Buffer.from(JSON.stringify({
   x402Version: 2, scheme: "exact",
   transactions: [Buffer.from(transfer.signTxn(payer.sk)).toString("base64")],
 })).toString("base64");
-console.log("  signed", Number(acc.amount) / 1e6, "rUSDC");
+console.log("  signed", Number(acc.amount) / 1e6, "USDC");
 
 console.log("\n── 3. retry with payment ──");
 r = await fetch(URL, {
@@ -96,8 +96,8 @@ console.log("  round     :", out.round);
 console.log("  verify    : https://testnet.explorer.perawallet.app/tx/" + out.settled);
 
 console.log("\n── balances after ──");
-console.log("  payer   :", await bal(payer.addr.toString()), "rUSDC");
-console.log("  merchant:", await bal(cfg.merchant.addr), "rUSDC");
+console.log("  payer   :", await bal(payer.addr.toString()), "USDC");
+console.log("  merchant:", await bal(cfg.merchant.addr), "USDC");
 
 fs.writeFileSync("/tmp/last-settlement.json", JSON.stringify({ txid: out.settled, round: out.round }, null, 2));
 server.close();

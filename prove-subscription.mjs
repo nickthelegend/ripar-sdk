@@ -129,7 +129,7 @@ async function payAndCall() {
 
 const before = await bal(payer.addr.toString());
 console.log("── TestNet, asset", ASSET, "──");
-console.log("  payer balance before:", before, "rUSDC");
+console.log("  payer balance before:", before, "USDC");
 
 /* 1. First call: gated, and it costs money. */
 const first = await payAndCall();
