@@ -31,7 +31,7 @@ const ALGOD: Record<string, string> = {
 /** The deployed registries. Overridable, because a fork or a redeploy makes
  *  hardcoded ids wrong and an id nobody can override is one nobody can fix. */
 export const REGISTRY: Record<string, { identity: number; reputation: number; validation: number }> = {
-  testnet: { identity: 768_572_968, reputation: 768_572_969, validation: 768_572_979 },
+  testnet: { identity: 768_633_998, reputation: 768_633_999, validation: 768_634_000 },
   // Nothing is deployed on MainNet yet. Zero rather than a guess, so a caller
   // gets "not deployed" instead of reading a stranger's app.
   mainnet: { identity: 0, reputation: 0, validation: 0 },

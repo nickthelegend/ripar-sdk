@@ -517,6 +517,178 @@ await step("escrow releases to the worker, and cannot be released twice", async 
   throw new Error("escrow released TWICE — the custody ledger can be drained");
 });
 
+/* ── 10. bidding and milestone release ─────────────────────────────────── */
+
+let bidJob;
+await step("a second job is posted, to bid on", async () => {
+  const total = Number((await call({ appId: VALIDATION, method: M("total_jobs", [], "uint64"), args: [], sender: merchant })).value);
+  bidJob = Number(
+    (
+      await call({
+        appId: VALIDATION,
+        method: M("post_job", [{ type: "byte[]" }, { type: "uint64" }, { type: "uint64" }], "uint64"),
+        args: [new Uint8Array(createHash("sha256").update(`ripar e2e bid job ${total}`).digest()), 400_000, 0],
+        sender: merchant,
+        fee: 3000,
+        boxes: [box(VALIDATION, "jb_", u64(total)), box(VALIDATION, "jb_", u64(total + 1))],
+      })
+    ).value
+  );
+  return `job ${bidJob}, budget 400000`;
+});
+
+const bidBox = (job, agent) => {
+  const raw = Buffer.concat([u64(job), u64(agent)]);
+  return { appIndex: VALIDATION, name: new Uint8Array([...Buffer.from("bd_"), ...raw]) };
+};
+
+await step("an agent can bid, and the pitch is committed by hash only", async () => {
+  const pitch = "I will do it for less";
+  await call({
+    appId: VALIDATION,
+    method: M("place_bid", [{ type: "uint64" }, { type: "uint64" }, { type: "uint64" }, { type: "byte[]" }], "bool"),
+    args: [bidJob, CLIENT_ID, 250_000, new Uint8Array(createHash("sha256").update(pitch).digest())],
+    sender: payer,
+    fee: 4000,
+    foreignApps: [IDENTITY],
+    boxes: [box(VALIDATION, "jb_", u64(bidJob)), bidBox(bidJob, CLIENT_ID), box(IDENTITY, "ag_", u64(CLIENT_ID))],
+  });
+  const bid = await call({
+    appId: VALIDATION,
+    method: M("get_bid", [{ type: "uint64" }, { type: "uint64" }], "(uint64,uint64,uint64,byte[],uint64)"),
+    args: [bidJob, CLIENT_ID],
+    sender: merchant,
+    boxes: [bidBox(bidJob, CLIENT_ID)],
+  });
+  const price = Number(bid.value[2]);
+  if (price !== 250_000) throw new Error(`bid reads ${price}, placed 250000`);
+  // The pitch text is NOT on chain — only a commitment to it. A reader can
+  // check a claimed pitch against this, and cannot recover one they were
+  // never shown.
+  const onChain = Buffer.from(bid.value[3]).toString("hex");
+  const expected = createHash("sha256").update(pitch).digest("hex");
+  if (onChain !== expected) throw new Error("the stored pitch hash is not the digest of the pitch");
+  return `agent ${CLIENT_ID} bid 250000, pitch committed as ${onChain.slice(0, 12)}…`;
+});
+
+await step("the client cannot bid on their own job", async () => {
+  try {
+    await call({
+      appId: VALIDATION,
+      method: M("place_bid", [{ type: "uint64" }, { type: "uint64" }, { type: "uint64" }, { type: "byte[]" }], "bool"),
+      args: [bidJob, SERVER_ID, 1000, new Uint8Array(32).fill(1)],
+      sender: merchant,
+      fee: 4000,
+      foreignApps: [IDENTITY],
+      boxes: [box(VALIDATION, "jb_", u64(bidJob)), bidBox(bidJob, SERVER_ID), box(IDENTITY, "ag_", u64(SERVER_ID))],
+    });
+  } catch {
+    return "the contract refused a bid from the job's own client";
+  }
+  throw new Error("a client was allowed to bid on their own job");
+});
+
+await step("accepting a bid rewrites the budget to the bid and assigns in one call", async () => {
+  await call({
+    appId: VALIDATION,
+    method: M("accept_bid", [{ type: "uint64" }, { type: "uint64" }], "bool"),
+    args: [bidJob, CLIENT_ID],
+    sender: merchant,
+    fee: 5000,
+    foreignApps: [IDENTITY],
+    boxes: [box(VALIDATION, "jb_", u64(bidJob)), bidBox(bidJob, CLIENT_ID), box(IDENTITY, "ag_", u64(CLIENT_ID))],
+  });
+  const job = await call({
+    appId: VALIDATION,
+    method: M("get_job", [{ type: "uint64" }], "(uint64,address,uint64,uint64,uint64,byte[],byte[],uint64,uint64,uint64)"),
+    args: [bidJob],
+    sender: merchant,
+    boxes: [box(VALIDATION, "jb_", u64(bidJob))],
+  });
+  // Job is (job_id, client, server_agent_id, validator_agent_id, budget_micro,
+  // spec_hash, result_hash, status, created_at, updated_at). server_agent_id is
+  // index 2; index 3 is the validator, which is 0 here because no validator was
+  // named — so reading 3 yields "assigned to agent 0", which looks like a
+  // failed assignment rather than a misread. Same trap as the Score struct.
+  const budget = Number(job.value[4]);
+  const assignee = Number(job.value[2]);
+  const validator = Number(job.value[3]);
+  // The budget has to become the bid. If it stayed at 400000 the client would
+  // escrow the asking price for work sold at 250000.
+  if (budget !== 250_000) throw new Error(`budget is ${budget} after accepting a 250000 bid`);
+  if (assignee !== CLIENT_ID) throw new Error(`job assigned to agent ${assignee}, expected ${CLIENT_ID}`);
+  return `budget 400000 → ${budget}, assigned to agent ${assignee} (validator ${validator} = client judges), no separate assign step`;
+});
+
+await step("a milestone pays part of the escrow and the rest stays held", async () => {
+  const sp = await ALGOD.getTransactionParams().do();
+  await call({
+    appId: VALIDATION,
+    method: M("fund_job", [{ type: "axfer" }, { type: "uint64" }], "uint64"),
+    args: [
+      {
+        txn: algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+          sender: merchant.addr,
+          receiver: algosdk.getApplicationAddress(VALIDATION),
+          amount: 250_000,
+          assetIndex: ASSET,
+          suggestedParams: sp,
+        }),
+        signer: algosdk.makeBasicAccountTransactionSigner(merchant),
+      },
+      bidJob,
+    ],
+    sender: merchant,
+    fee: 4000,
+    assets: [ASSET],
+    boxes: [box(VALIDATION, "jb_", u64(bidJob)), box(VALIDATION, "es_", u64(bidJob))],
+  });
+  await call({
+    appId: VALIDATION,
+    method: M("submit_result", [{ type: "uint64" }, { type: "byte[]" }], "bool"),
+    args: [bidJob, new Uint8Array(createHash("sha256").update("milestone one").digest())],
+    sender: payer,
+    fee: 4000,
+    foreignApps: [IDENTITY],
+    boxes: [box(VALIDATION, "jb_", u64(bidJob)), box(IDENTITY, "ag_", u64(CLIENT_ID))],
+  });
+  await call({
+    appId: VALIDATION,
+    method: M("validation_response", [{ type: "uint64" }, { type: "bool" }], "uint64"),
+    args: [bidJob, true],
+    sender: merchant,
+    fee: 8000,
+    foreignApps: [IDENTITY, REPUTATION],
+    boxes: [box(VALIDATION, "jb_", u64(bidJob)), box(IDENTITY, "ag_", u64(CLIENT_ID)), box(REPUTATION, "sc_", u64(CLIENT_ID))],
+  });
+
+  const before = (await holdings(payer.addr)).asa;
+  // This is the call that shipped broken: _agent_address opens its own inner
+  // transaction, and resolving it inside the itxn argument list produced
+  // "itxn_begin without itxn_submit" at runtime with nothing catching it
+  // earlier. It compiled, deployed, and passed every check that did not move
+  // money.
+  const remaining = Number(
+    (
+      await call({
+        appId: VALIDATION,
+        method: M("release_partial", [{ type: "uint64" }, { type: "uint64" }], "uint64"),
+        args: [bidJob, 100_000],
+        sender: merchant,
+        fee: 5000,
+        assets: [ASSET],
+        accounts: [payer.addr.toString()],
+        foreignApps: [IDENTITY],
+        boxes: [box(VALIDATION, "jb_", u64(bidJob)), box(VALIDATION, "es_", u64(bidJob)), box(IDENTITY, "ag_", u64(CLIENT_ID))],
+      })
+    ).value
+  );
+  const moved = (await holdings(payer.addr)).asa - before;
+  if (moved !== 100_000) throw new Error(`worker received ${moved}, released 100000`);
+  if (remaining !== 150_000) throw new Error(`${remaining} remains held, expected 150000`);
+  return `paid 100000, ${remaining} still escrowed`;
+});
+
 await close?.();
 
 /* ── summary ────────────────────────────────────────────────────────────── */
