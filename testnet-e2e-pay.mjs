@@ -6,8 +6,9 @@
 import express from "express";
 import algosdk from "algosdk";
 import fs from "node:fs";
+import { configPath } from "./config-path.mjs";
 
-const cfg = JSON.parse(fs.readFileSync(process.env.RIPAR_E2E_CONFIG ?? "/tmp/testnet-e2e.json", "utf8"));
+const cfg = JSON.parse(fs.readFileSync(configPath("testnet-e2e.json"), "utf8"));
 const reg = JSON.parse(fs.readFileSync("/tmp/registries.json", "utf8"));
 const algod = new algosdk.Algodv2(
   process.env.ALGOD_TOKEN ?? "",

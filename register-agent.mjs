@@ -14,8 +14,9 @@
  */
 import algosdk from "algosdk";
 import fs from "node:fs";
+import { configPath } from "./config-path.mjs";
 
-const cfg = JSON.parse(fs.readFileSync(process.env.RIPAR_E2E_CONFIG ?? "/tmp/testnet-e2e.json", "utf8"));
+const cfg = JSON.parse(fs.readFileSync(configPath("testnet-e2e.json"), "utf8"));
 /* The LIVE IdentityRegistry. This read 768_547_159 until 2026-08-05, which is
    the generation before last — superseded twice over. A dead registry does not
    error: it answers, with nothing. So this script would have registered against

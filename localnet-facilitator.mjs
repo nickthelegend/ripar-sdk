@@ -20,6 +20,7 @@
 import express from "express";
 import algosdk from "algosdk";
 import fs from "node:fs";
+import { configPath } from "./config-path.mjs";
 import { AlgorandClient } from "@algorandfoundation/algokit-utils";
 import { ExactAvmScheme } from "@x402/avm/exact/facilitator";
 import { ALGORAND_TESTNET_CAIP2 } from "@x402/avm";
@@ -28,7 +29,7 @@ const PORT = Number(process.env.FACILITATOR_PORT ?? 4020);
 const ALGOD_URL = process.env.ALGOD_URL ?? "http://localhost";
 const ALGOD_PORT = process.env.ALGOD_PORT ?? "4001";
 const TOKEN = process.env.ALGOD_TOKEN ?? "a".repeat(64);
-const CONFIG = process.env.RIPAR_E2E_CONFIG ?? "/tmp/localnet-e2e.json";
+const CONFIG = configPath("localnet-e2e.json");
 
 const cfg = JSON.parse(fs.readFileSync(CONFIG, "utf8"));
 const algod = new algosdk.Algodv2(TOKEN, ALGOD_URL, ALGOD_PORT);

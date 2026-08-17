@@ -17,11 +17,12 @@
  */
 import algosdk from "algosdk";
 import fs from "node:fs";
+import { configPath } from "./config-path.mjs";
 import { createHash } from "node:crypto";
 import { createServer } from "./dist/server.js";
 import { defineAgent, defineEndpoint } from "./dist/define.js";
 
-const CONFIG = process.env.RIPAR_E2E_CONFIG ?? "/tmp/testnet-e2e.json";
+const CONFIG = configPath("testnet-e2e.json");
 const FACILITATOR = process.env.FACILITATOR_URL ?? "https://facilitator.goplausible.xyz";
 const ALGOD = new algosdk.Algodv2(
   process.env.ALGOD_TOKEN ?? "",

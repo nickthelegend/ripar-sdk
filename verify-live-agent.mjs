@@ -16,10 +16,11 @@
  */
 import algosdk from "algosdk";
 import fs from "node:fs";
+import { configPath } from "./config-path.mjs";
 
 const AGENT = process.env.RIPAR_AGENT_URL ?? "https://api.ripar.io";
 const ENDPOINT = `${AGENT}/api/summarize`;
-const CONFIG = process.env.RIPAR_E2E_CONFIG ?? "/tmp/testnet-e2e.json";
+const CONFIG = configPath("testnet-e2e.json");
 
 const algod = new algosdk.Algodv2(
   process.env.ALGOD_TOKEN ?? "",
