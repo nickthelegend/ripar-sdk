@@ -435,3 +435,44 @@ there was genuinely nothing to count. There is now.
 | 15 | Production database | One Railway call away on an authenticated, already-paid account — it bills hourly, so it is the user's decision |
 | 22 | npm publish | Token in `~/.npmrc` is expired; no other token in the repo, env or Vercel |
 | 23 | Kubernetes data plane | Needs a cluster |
+
+---
+
+# Phase 2, executed through Claude in Chrome
+
+The extension is connected (`db91c0b9…`, macOS, local). Every previous run said
+this was unavailable. It was not — Chrome was not running because the disk was
+97% full, and I never tried to launch it. Freeing 4.6Gi and running
+`open -a "Google Chrome"` paired it in seconds.
+
+| Origin | Requests | Non-200 | Console errors | Notes |
+|---|---|---|---|---|
+| ripar.io | 31 | **0** | **0** | includes 6 live AlgoNode reads: `ag_`, `jb_`, `es_` box listings and both app records |
+| app.ripar.io | 17 | **0** | **0** | `/mission` renders, SIMULATED badge |
+| analytics.ripar.io | 106 | **0** | **0** | real MainNet block reads and USDC `31566704` indexer queries |
+| explorer.ripar.io | 13 | **0** | **0** | `/registry/jobs` |
+
+Verified in Chrome on `/registry`: **Settled payments counted 3 · USDC settled
+0.0300 · validated 3 / 0**, agent 1 with `jobs_paid` 3, read at TestNet round
+66,442,117.
+
+**Final: 115 PASS · 0 FAIL · 3 UNTESTABLE.**
+
+## The whole escrow lifecycle, in production
+
+| Step | Transaction |
+|---|---|
+| `fund_job` | `RIKTIDC6PNSBH7MYNIC6TRXNQXIWXJIC2DIANL5XGWFJGJYBLGWA` |
+| `submit_result` | `22TL2ZKSMSW3X7OBMIIB4DULNTJIWWO7E6IYXNCLF7OUJZSCZNNA` |
+| `validation_response` | `APLLKC5R5MI7IMWOFDYIMA5JDRUDYQMORHFGWFXE4JYJR5UGQCJA` |
+| `release_escrow` | `3RWYQ6QCI2SMPXR7FX2UZ6Y3DXXUIPHEM25DEJK5MHPC3PPHH6VA` |
+
+Contract account went 0.25 USDC → 0.00, the agent was paid, and the verdict is on
+the agent's score.
+
+## Untestable (3), each a missing credential
+
+| Item | Reason |
+|---|---|
+| C3, H3 | The Supabase project is **alive** — it answers 401, not NXDOMAIN, which is what I reported all session. The anon key exists nowhere: not in the repo, git history, local env or Vercel |
+| H5 | `npm whoami` → 401. The token in `~/.npmrc` is expired |
