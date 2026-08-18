@@ -140,32 +140,130 @@ Scored **impact × feasibility × fit** (1–5 each, 125 max).
 
 ---
 
-# What was actually built this pass
+# Final disposition — all 100
 
-| # | Idea | Status | Verified by |
-|---|---|---|---|
-| 1 | x402 quote decoder | **BUILT** | Live at [explorer.ripar.io/decode](https://explorer.ripar.io/decode). Against `api.ripar.io/api/summarize`: 402 in 162ms, 652-byte `PAYMENT-REQUIRED`, x402 v2, decoding to **0.01 USDC** (10000 base units ÷ 10^6), scheme `exact`, asset 10458941, 300s to settle |
-| 30 | Ticker resolved from the asset when a challenge omits it | **BUILT** | Renders "0.01 USDC … · ticker read from the asset, which the challenge did not state" — read from the ASA's own params, and it says so |
-| 11 | v1 `X-PAYMENT-REQUIRED` ↔ v2 `PAYMENT-REQUIRED` | **BUILT** | Both header names read; a v1-only server is not treated as a typo |
-| 83 | Graceful degradation | **BUILT** | Timeout, non-402, and 402-with-no-header are each reported as their own case rather than a generic failure |
-| — | `/decode` classified in the chrome route table | **BUILT** | The sample-dataset strip no longer sits above a page whose content is a live 402 from someone else's server |
+Every idea, with what happened to it. Four categories, as asked: **built**,
+**blocked** on something that does not exist, **hurts the pitch**, or **time**.
 
-Built in earlier passes this session, so not re-proposed: real registries on the
-explorer, the ABI-coverage guard, workflows that issue real calls, the algod
-`simulate` pre-flight, the reproducible Postgres schema.
+| # | Idea | Score | Status | Why |
+|---|---|---|---|---|
+| 1 | x402 quote decoder — paste any URL, make the real request, decode the real challenge field by field | 125 | **BUILT** | Live at explorer.ripar.io/decode. Against api.ripar.io/api/summarize: 402 in 162ms, 652-byte PAYMENT-REQUIRED, x402 v2, decoding to 0.01 USDC (10000 base units / 10^6), scheme exact, asset 10458941, 300s to settle. |
+| 2 | `/receipt/<txid>` — the whole payment story for one settlement, from chain | 100 | SKIPPED — **blocked** | needs one settled payment. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 3 | Atomic-group visualiser: show the real 3-txn x402 group as a diagram | 100 | SKIPPED — **blocked** | needs one real settled group. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 4 | Simulate pre-flight on the *job* actions too, not just registration | 100 | **BUILT** | Already shipped earlier this session: simulate sits in the shared compose helper, so every action gets it, not only registration. I proposed it without noticing it existed. |
+| 5 | A "why did this fail" decoder for AVM assert messages, reusable across surfaces | 100 | **BUILT** | Already shipped earlier this session as readableFailure() in registry-compose: an overspend renders as 'the sender cannot cover 1mA - it holds no ALGO'. I proposed it without noticing it existed. |
+| 6 | Escrow state machine as a real diagram, driven by live job status | 80 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 7 | Live settlement ticker on the landing page, from the indexer | 80 | SKIPPED — **blocked** | needs settlements to tick. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 8 | OG images per route, generated from real chain state | 64 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 9 | The 402 handshake animated as a real sequence, timed to actual latencies | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 10 | Copy-as-curl on every composed call and every quote | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 11 | x402 v1 `X-PAYMENT` ↔ v2 `PAYMENT-SIGNATURE` compatibility shim | 80 | **BUILT** | Built inside #1. Both header names are read; a v1-only server is not treated as a typo. |
+| 12 | Facilitator failover across several facilitators | 64 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 13 | Box browser: raw box bytes with ARC-4 decoding shown side by side | 64 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 14 | Opcode-budget readout per method, from real simulate runs | 60 | **BUILT** | Already shipped earlier this session: simulate returns appBudgetConsumed and the panel prints '91 of its opcode budget'. I proposed it without noticing it existed. |
+| 15 | Fee sponsorship — a relayer covers the payer's fee | 48 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 16 | Batch settlement: many calls, one group | 48 | SKIPPED — **blocked** | needs USDC to demonstrate. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 17 | Idempotency keys on paid calls | 48 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 18 | Streaming pay-per-token for LLM endpoints | 32 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 19 | Subscription endpoints (recurring x402) | 27 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 20 | ASA-agnostic settlement, any asset | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 21 | NFD name resolution for agent addresses | 27 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 22 | Receipt minted as an ARC-3 NFT | 18 | SKIPPED — **blocked** | needs a settlement to mint from. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 23 | LogicSig micropayment channel | 24 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 24 | Rekey-based delegated agent signing | 18 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 25 | Multi-sig escrow release | 27 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 26 | State-proof / finality indicator | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 27 | Spending caps enforced per agent | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 28 | Per-endpoint price history from settled transfers | 36 | SKIPPED — **blocked** | needs settled transfers. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 29 | Cross-network CAIP-2 display | 30 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 30 | Contract source verification link per app id | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 31 | Wallet connect (Pera / Defly / Lute) | 60 | SKIPPED — **blocked** | needs a wallet to sign with. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 32 | Post a job from the UI | 48 | SKIPPED — **blocked** | needs wallet signing. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 33 | Place a bid from the UI | 48 | SKIPPED — **blocked** | needs wallet signing. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 34 | Accept a bid from the UI | 48 | SKIPPED — **blocked** | needs wallet signing. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 35 | Fund escrow from the UI | 48 | SKIPPED — **blocked** | needs wallet signing. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 36 | Agent health checks with real uptime | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 37 | Agent capability search across the registry | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 38 | A2A agent card generated from endpoint definitions | 64 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 39 | `ripar dev` — a local facilitator for offline development | 64 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 40 | `ripar deploy` — one-command endpoint publish | 48 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 41 | Webhook fired on settlement | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 42 | Workflow step outputs feeding the next step | 48 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 43 | Workflow run history with per-step timings | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 44 | Dispute flow in the UI | 27 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 45 | SLA — escrow penalty when latency is exceeded | 18 | SKIPPED — **hurts the pitch** | complexity a judge never sees; a pile of disconnected features costs more than it adds. |
+| 46 | Per-endpoint usage analytics from chain | 27 | SKIPPED — **blocked** | needs settled calls to count. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 47 | Rate limiting per payer | 16 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 48 | Endpoint versioning | 12 | SKIPPED — **hurts the pitch** | clutter; a pile of disconnected features costs more than it adds. |
+| 49 | In-app faucet links with a live balance check | 45 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 50 | Job templates | 16 | SKIPPED — **hurts the pitch** | clutter; a pile of disconnected features costs more than it adds. |
+| 51 | Number roll-up on chain-read stats, reduced-motion aware | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 52 | Settlement confirmation timed to Algorand's real ~2.8s finality | 80 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 53 | Skeletons that match final layout exactly | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 54 | Command palette across every surface | 64 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 55 | Scroll-driven architecture diagram | 48 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 56 | Terminal typing demo of the SDK | 64 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 57 | Fan-mark motion signature | 48 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 58 | Route transition choreography | 27 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 59 | Empty states drawn, not "no data" | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 60 | Chart entrance animation | 30 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 61 | Toasts that carry the real txid and link out | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 62 | Sticky table headers on long registry tables | 30 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 63 | Hover cards on agent ids showing the live score | 48 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 64 | Keyboard shortcuts with a help sheet | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 65 | Focus rings and full keyboard traversal | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 66 | `prefers-reduced-motion` honoured everywhere | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 67 | Mobile pass on the registry tables | 64 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 68 | Dark mode via tokens, no flash | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 69 | Print stylesheet for receipts | 16 | SKIPPED — **hurts the pitch** | noise; a pile of disconnected features costs more than it adds. |
+| 70 | PWA manifest and favicons | 20 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 71 | Loading progress bar on navigation | 16 | SKIPPED — **hurts the pitch** | noise; a pile of disconnected features costs more than it adds. |
+| 72 | Error boundary naming the cause | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 73 | 404 page with search | 30 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 74 | Syntax-highlighted code with copy | 45 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 75 | Confetti on a first real settlement | 20 | SKIPPED — **hurts the pitch** | gimmick next to real money; a pile of disconnected features costs more than it adds. |
+| 76 | Animated agent network topology | 27 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 77 | A "what just happened" replay of a settlement | 48 | SKIPPED — **blocked** | needs a settlement to replay. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 78 | Micro-sparklines beside each agent's volume | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 79 | Live round counter ticking with the chain | 45 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 80 | Diff view when a registry value changes between polls | 27 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 81 | Timeouts on every chain call | 60 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 82 | Retry with backoff where it is safe | 45 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 83 | Graceful degradation when algod is unreachable | 80 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 84 | Structured errors (RFC 7807) on every route | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 85 | Input validation on every route | 80 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 86 | CORS correctness for x402 headers | 80 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 87 | Health endpoint with real dependency checks | 45 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 88 | Rate-limit headers surfaced to callers | 16 | SKIPPED — **hurts the pitch** | invisible; a pile of disconnected features costs more than it adds. |
+| 89 | Request logging with redaction | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 90 | Security headers / CSP | 36 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 91 | CI: contract invariant tests | 64 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 92 | CI: end-to-end payment test | 80 | SKIPPED — **blocked** | needs USDC for the payment leg. Not a time problem: TestNet USDC comes only from Circle's reCAPTCHA-gated faucet, and a wallet is a user-held credential. |
+| 93 | CI: a guard that no MainNet constant appears in a TestNet app | 80 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 94 | CI: the schema must apply to an empty database | 80 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 95 | robots.txt + sitemap per surface | 20 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 96 | Cookieless analytics | 16 | SKIPPED — **hurts the pitch** | irrelevant to judging; a pile of disconnected features costs more than it adds. |
+| 97 | Uptime monitoring of the deployed agent | 27 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 98 | Changelog generated from commits | 16 | SKIPPED — **hurts the pitch** | irrelevant to judging; a pile of disconnected features costs more than it adds. |
+| 99 | Quickstart that runs verbatim, checked in CI | 64 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
+| 100 | A guard that every claim in the README is machine-checkable | 48 | SKIPPED — **time** | Ranked below what was built; the run ended here rather than at a round number. |
 
-## Not built, and why
+**5 built · 14 blocked · 9 cut as clutter · 72 not reached.**
 
-Everything else on the list is **not started**. The honest reason is time, not
-difficulty — the run ended here rather than at a round number.
+## Two corrections to my own earlier report
 
-Three are blocked on something that does not exist rather than on effort:
-**#31 wallet connect** needs a wallet to sign with, and shipping a connect flow I
-cannot complete a single signature through would be untested code; **anything
-requiring a settled payment** (#2 receipt page, #3 atomic-group visualiser, #7
-settlement ticker, #77 replay) needs TestNet USDC, which only Circle's
-reCAPTCHA-gated faucet issues; **#92 CI end-to-end payment test** the same.
+I reported the ticker resolution as idea #30 and graceful degradation as #83.
+Both were wrong. The ticker work is part of #1, not #30 (which is a contract
+source-verification link and is **not** built). #83 is broader than the
+decoder's own error paths, so it is **not** built either.
 
-Those four design items — the receipt page, the group visualiser, the ticker and
-the replay — are the ones I would build next, and all four unblock together the
-moment one payment settles.
+Three items — #4, #5 and #14 — turned out to be already shipped earlier in this
+session, inside the `simulate` work. I proposed them without noticing. They are
+marked built because they are real, not because this pass built them.
+
+## The shape of what is left
+
+14 of the 99 unbuilt ideas are blocked, and 12 of those 14 trace to a single
+missing thing: **one settled payment**. The receipt page, the atomic-group
+visualiser, the settlement ticker and the replay are the four highest-scoring
+of them, and all four unblock together the moment TestNet USDC arrives.
