@@ -71,8 +71,8 @@ await check("C7", "app /api/registry/agents reads the LIVE registry", async () =
   const r = await get(`${APP}/api/registry/agents`);
   must(r.status === 200, `status ${r.status}`);
   const j = r.json();
-  must(j.identityApp === 768633998, `identityApp ${j.identityApp} is not the live registry`);
-  must(j.reputationApp === 768633999, `reputationApp ${j.reputationApp} is not live`);
+  must(j.identityApp === 769444119, `identityApp ${j.identityApp} is not the live registry`);
+  must(j.reputationApp === 769444120, `reputationApp ${j.reputationApp} is not live`);
   must(j.agentCount >= 1, "no agents");
   must(j.agents[0].address?.length === 58, "agent record has no valid address");
   return `identity ${j.identityApp}, ${j.agentCount} agents, round ${j.round}`;
@@ -82,7 +82,7 @@ await check("C8", "app /api/registry/jobs reads the LIVE registry and names the 
   const r = await get(`${APP}/api/registry/jobs`);
   must(r.status === 200, `status ${r.status}`);
   const j = r.json();
-  must(j.validationApp === 768634000, `validationApp ${j.validationApp} is not live`);
+  must(j.validationApp === 769444121, `validationApp ${j.validationApp} is not live`);
   // The asset ticker must be what the ASA declares, not a constant.
   const asa = await (await fetch(`https://testnet-api.algonode.cloud/v2/assets/${j.terms.assetId}`)).json();
   const real = asa.params?.["unit-name"];
@@ -141,12 +141,12 @@ await check("C10", "app /api/registry/compose builds a REAL unsigned transaction
   // algosdk v3 nests the call under `applicationCall`; `txn.appIndex` is v2.
   const call = txn.applicationCall;
   must(call, "decoded transaction carries no application call");
-  must(Number(call.appIndex) === 768633998, `composed against app ${call.appIndex}, not the live registry`);
+  must(Number(call.appIndex) === 769444119, `composed against app ${call.appIndex}, not the live registry`);
   // The selector on the wire must be the method the summary claims.
   const wanted = Buffer.from(algosdk.ABIMethod.fromSignature("new_agent(string)uint64").getSelector()).toString("hex");
   must(Buffer.from(call.appArgs[0]).toString("hex") === wanted,
     "the first app arg is not the new_agent selector");
-  return `400 names the field, 409 explains the conflict, fresh sender decodes to new_agent(string)uint64 on 768633998, fee ${j.totalFee}`;
+  return `400 names the field, 409 explains the conflict, fresh sender decodes to new_agent(string)uint64 on 769444119, fee ${j.totalFee}`;
 });
 
 await check("C11", "app registry APIs reject bad input explicitly", async () => {
