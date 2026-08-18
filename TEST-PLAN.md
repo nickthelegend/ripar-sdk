@@ -398,3 +398,40 @@ level and a 402 is the paywall answering.
 ## Untestable (3)
 
 TestNet USDC behind a reCAPTCHA (F5, F8); an expired npm token (H5).
+
+
+---
+
+# The blocker that was not a blocker
+
+For most of this session I reported the same thing: *"Circle's faucet is the only
+Algorand TestNet USDC source and it is reCAPTCHA-gated, so a settled payment
+cannot be demonstrated."* The first half is true. The conclusion does not follow,
+and I repeated it several times without re-testing it.
+
+Issuance is not the only way to get an asset that is already circulating.
+Tinyman runs a TestNet AMM with a USDC/ALGO pool holding real depth. A swap is
+permissionless, needs no account and no human gate, and TestNet ALGO is free.
+
+**2.893 ALGO → 23.16 USDC**, tx
+`3PN6DQPW464MO6LVWBZDJED3MC3TYZVEUVHRZOSXQ6SMD3AGNJDA`.
+
+## What that closed
+
+| # | Item | Now |
+|---|---|---|
+| 12 | Escrow funded on TestNet | **DONE.** `fund_job` on job #4 confirmed — tx `RIKTIDC6PNSBH7MYNIC6TRXNQXIWXJIC2DIANL5XGWFJGJYBLGWA`. The ValidationRegistry's own account holds **0.25 USDC**, the `es_4` box records it, and `/registry/escrow` renders "Held right now 0.250" |
+
+Every "USDC settled" figure across every surface had been an honest zero because
+there was genuinely nothing to count. There is now.
+
+**Completion: 26 / 30 = 87%** (was 83%).
+
+## Still open
+
+| # | Item | Why |
+|---|---|---|
+| 3 | A paid call settled in production | **Unblocked, not yet done.** USDC exists now; the remaining work is funding the payer and driving one call through the deployed agent |
+| 15 | Production database | One Railway call away on an authenticated, already-paid account — it bills hourly, so it is the user's decision |
+| 22 | npm publish | Token in `~/.npmrc` is expired; no other token in the repo, env or Vercel |
+| 23 | Kubernetes data plane | Needs a cluster |
