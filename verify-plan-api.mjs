@@ -310,6 +310,23 @@ await registryCheck("G2", "ReputationRegistry", "usdc_asset");
 await registryCheck("G3", "ValidationRegistry", "escrow_asset");
 
 await check("G4", "attack suite: every negative rejected, every positive accepted", async () => {
+  // A LocalNet that has been deployed to many times runs out of spendable
+  // balance: every app and every box permanently locks minimum balance, and
+  // nothing here can be torn down. The failure arrives as a raw
+  // URLTokenBaseHTTPError with a "balance N below min M" buried in it, which
+  // reads like the chain is broken rather than like the account is full.
+  const explain = (err) => {
+    const text = String(err.stdout ?? "") + String(err.stderr ?? "") + String(err.message ?? "");
+    const mbr = text.match(/balance (\d+) below min (\d+)/);
+    if (mbr) {
+      const short = ((Number(mbr[2]) - Number(mbr[1])) / 1e6).toFixed(3);
+      throw new Error(
+        `The LocalNet account is ${short} ALGO below its minimum balance. Every deploy permanently locks MBR and a used registry cannot be torn down, so a chain deployed to repeatedly fills up. Rebuild it: algokit localnet reset && node ripar-contracts/localnet-setup.mjs`,
+      );
+    }
+    throw err;
+  };
+
   const out = execSync("node deploy-v2.mjs", {
     cwd: path.join(ROOT, "ripar-contracts"), encoding: "utf8", maxBuffer: 40e6,
     env: { ...process.env, RIPAR_E2E_CONFIG: path.join(os.homedir(), ".ripar", "localnet-e2e.json"),

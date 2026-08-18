@@ -340,3 +340,61 @@ every page loaded in a clean tab. No regressions.
 ## Untestable (3, unchanged)
 
 TestNet USDC behind a reCAPTCHA (F5, F8); an expired npm token (H5).
+
+
+---
+
+# Phase 1 addendum 2 — rows for what changed since
+
+| # | Item | Correct means |
+|---|---|---|
+| A10 | Landing hero after the `DashboardPreview` rename | Hero renders; the drawing shows prices and schedules only; **zero** cumulative totals; 0 console errors |
+| D26 | Explorer declares a touch icon | `<link rel="apple-touch-icon">` present and the target returns 200 — browsers stop guessing at two paths that 404 |
+| I7 | Console read in a FRESH tab per origin | Zero errors. A tab reused across origins carries a stale buffer, and `clear: true` returns the buffer BEFORE clearing — both fooled the previous run |
+
+---
+
+# Phase 4 — final full re-run
+
+| Group | Result |
+|---|---|
+| A1, A2, A10 | **PASS** — BROWSER, fresh tab. 19 subresources, 0 failed, 0 console errors; no fabricated totals; 2 agents and all three registry ids read from chain |
+| C5, C6–C11 | **PASS** — BROWSER, fresh tab. SIMULATED badge, canvas, 15 subresources 0 failed; manifest/agents/jobs all 200; bad input → 400 naming the field |
+| E1–E3 | **PASS** — BROWSER, fresh tab. 2.75s block time live; Ripar section renders; 3 figures; 48 subresources 0 failed |
+| D1–D26 | **PASS** — explorer clean in a fresh tab; job #4 shows the rewritten 0.25 |
+| **G4** | **FAIL → fixed → PASS** — 66 assertions, 0 failures |
+| **G5–G8** | **FAIL → fixed → PASS** — 23/23 steps |
+| Suites / guards / capabilities / routes | 489 + 270; both guards; 14/14; 50 routes |
+| Mocks / stubs / TODO | **0** |
+
+**Tally: 113 PASS · 0 FAIL · 3 UNTESTABLE.**
+
+## The FAIL, and why it was not a code defect
+
+G4 and G5–G8 dropped out with a raw `URLTokenBaseHTTPError`. The cause was
+environmental: the LocalNet account had fallen **below its minimum balance**
+(`30350600 below min 30635500`). Every deploy permanently locks MBR — an app and
+its boxes cannot be torn down — so a chain deployed to repeatedly during a long
+session simply fills up.
+
+Fixed by rebuilding the chain (`algokit localnet reset` +
+`ripar-contracts/localnet-setup.mjs`), which is the designed path.
+
+The harness now recognises that shape and says so: it reports how far below
+minimum the account is and names the two commands, instead of surfacing an HTTP
+error that reads like the chain is broken.
+
+## Confirmations
+
+Zero mocks, zero stubs, zero fallback data — 0 hits in executable code. Zero
+console errors and zero failed requests on every page, read in a **fresh tab per
+origin**; a reused tab carries a stale buffer and `clear: true` returns it before
+clearing, which produced two phantom 404s last run.
+
+The one console entry that is correct behaviour: a successful workflow run and a
+successful `/decode` each leave a 402, because Chrome logs every non-2xx at error
+level and a 402 is the paywall answering.
+
+## Untestable (3)
+
+TestNet USDC behind a reCAPTCHA (F5, F8); an expired npm token (H5).
