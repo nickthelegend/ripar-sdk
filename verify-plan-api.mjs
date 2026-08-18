@@ -228,8 +228,23 @@ await check("F4", "agent unpaid → 402 with a REAL decodable quote", async () =
   return `402, ${c.accepts.length} accept(s), asset ${quote.asset}, ${quote.maxAmountRequired ?? quote.amount} units`;
 });
 
-untestable("F5", "agent paid call settles on chain",
-  "the TestNet signer key was lost to a /tmp prune; no account can sign. Equivalent proven on LocalNet (verify-e2e 23/23).");
+// This was hardcoded UNTESTABLE for a reason that stopped being true: the signer
+// was replaced, and TestNet USDC turned out to be obtainable by swapping for it
+// rather than waiting on a gated faucet. A reason that is never re-checked
+// becomes a way of not looking.
+await check("F5", "agent paid call settles on chain", async () => {
+  const out = execSync("node verify-live-agent.mjs", {
+    cwd: path.join(ROOT, "ripar-sdk"), encoding: "utf8", maxBuffer: 20e6,
+  });
+  const passed = (out.match(/PASS/g) ?? []).length;
+  must(/\d+\/\d+ steps passed/.test(out), `live agent run did not report a tally:\n${out.slice(-260)}`);
+  must(!/FAIL/.test(out), `live agent run had failures:\n${out.slice(-400)}`);
+  const settled = out.match(/settled as ([A-Z2-7]{52})/)?.[1];
+  must(settled, "no settlement transaction id in the output");
+  const credited = out.match(/jobs_paid (\d+) → (\d+)/);
+  must(credited && Number(credited[2]) > Number(credited[1]), "the payment did not credit reputation");
+  return `${passed} steps, settled ${settled.slice(0, 12)}…, jobs_paid ${credited[1]} → ${credited[2]}`;
+});
 
 await check("F6", "a rejected request is not charged (proved on LocalNet)", async () => {
   const cfgPath = path.join(os.homedir(), ".ripar", "localnet-e2e.json");
@@ -255,8 +270,13 @@ await check("F7", "agent /a2a unpaid → HTTP 402 AND a JSON-RPC error carrying 
   return `HTTP 402 + JSON-RPC ${j.error.code}, ${j.error.data.requirements.accepts.length} accept(s)`;
 });
 
-untestable("F8", "agent /a2a paid call returns an artifact",
-  "same lost TestNet signer as F5. The A2A paid path was proven end to end earlier against this same deployment.");
+await check("F8", "agent /a2a paid call returns an artifact", async () => {
+  const out = execSync("node verify-a2a-live.mjs", {
+    cwd: path.join(ROOT, "ripar-sdk"), encoding: "utf8", maxBuffer: 20e6,
+  });
+  must(!/FAIL/.test(out), `A2A run had failures:\n${out.slice(-400)}`);
+  return out.trim().split("\n").filter(Boolean).slice(-1)[0]?.trim().slice(0, 120) ?? "completed";
+});
 
 await check("F9", "agent /a2a unknown method → JSON-RPC error, not a 500", async () => {
   const r = await get(`${AGENT}/a2a`, {
