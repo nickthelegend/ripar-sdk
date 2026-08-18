@@ -226,3 +226,33 @@ and network, but it is a stated deviation from the goal, not a silent one.
 - **Zero failed network requests** — every subresource re-requested and status-checked.
 - **No regressions**: 489 + 270 tests passing, both CI guards green, all 14 live
   routes at their expected status.
+
+
+---
+
+# Phase 4 re-run — after the decoder and the lease
+
+Everything re-executed top to bottom, not only the items touched.
+
+| Group | Result |
+|---|---|
+| A–I (all 98 rows above) | **PASS**, unchanged — 50 routes at their expected status, 0 unexpected failures |
+| **New: D22 `/decode`** | **PASS** — BROWSER. Against `api.ripar.io/api/summarize`: 402 in 162ms, 652-byte `PAYMENT-REQUIRED`, x402 v2, decoded to 0.01 USDC (10000 base units ÷ 10^6), scheme `exact`, asset 10458941, 300s timeout. Ticker resolved from the ASA and labelled as such |
+| **New: C14 replay lease** | **PASS** — live in production. 32 bytes, present on the transaction; same action twice → identical bytes; different result hash → different bytes; reported lease equals the one decoded off the transaction; simulate still ok, 151 opcodes |
+| **New: G10 Algorand capability audit** | **PASS** — `ripar-sdk/algo-audit.mjs`, **14/14** verified against public nodes and the deployed programs |
+| Suites | 489 + 270 passing |
+| CI guards | settlement asset and ABI coverage both green |
+| Chain harness | 26 PASS · 0 FAIL · 4 UNTESTABLE |
+
+**Tally: 96 PASS · 0 FAIL · 3 UNTESTABLE.**
+
+The three untestable are unchanged and unchanged in reason: TestNet USDC behind
+a reCAPTCHA (F5, F8), and an expired npm token (H5).
+
+## One console error that is correct behaviour
+
+A successful workflow run and a successful `/decode` both leave
+`Failed to load resource: the server responded with a status of 402` in the
+console. Chrome logs every non-2xx at error level. A 402 is the paid endpoint
+answering correctly — it is the whole mechanism — and the only way to a silent
+console here is to not make the call. Stated rather than suppressed.
