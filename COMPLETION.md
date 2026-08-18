@@ -288,3 +288,48 @@ confidently, then re-quoted instead of re-tested.
 
 Not 100%, and each remaining item names a specific missing credential or
 resource rather than an unfinished feature.
+
+
+---
+
+# Seventh measurement — 90%, and an honest split in what is left
+
+**27 / 30 = 90%.** Unchanged from the sixth measurement: C3 and H3 closed on the
+test plan, but they map to checklist items 16–18 (auth, RLS, reproducible schema)
+which were already counted done. Nothing on the 30 moved.
+
+Verified this pass: 489 + 270 tests · 28/30 harness, 0 FAIL · 14/14 Algorand
+capabilities live · 50 routes · **0 mocks** · explorer reads
+**"Settled payments counted 6"** from chain, growing each time the paid-call
+harness runs.
+
+## The three that are open are not open for the same reason
+
+| # | Item | Category | Detail |
+|---|---|---|---|
+| 15 | Production database | **Genuinely blocked** | The hosted Supabase project is alive (401), but its anon key exists nowhere — not in the repo, git history, local env or Vercel. `NEXT_PUBLIC_SUPABASE_URL` is set to an empty string. Restoring it needs a key only the account holder can issue, or a new project, which needs an account |
+| 22 | npm publish | **Genuinely blocked** | `npm whoami` → 401. The token in `~/.npmrc` is expired and there is no other |
+| 23 | Kubernetes data plane | **Not blocked — unfinished** | `kubectl` is installed; k3d, kind, minikube and helm are not, and no cluster is reachable. Nothing stops them being installed and `ripar-infra/` deploying to a local k3d cluster. I did not do it |
+
+That last distinction matters and is the reason this section exists. For most of
+this session I filed things under "blocked" that were merely untried — TestNet
+USDC, Claude in Chrome, the Supabase project, the F5/F8 signer. Each dissolved on
+a second look. #23 is the one remaining item where the honest answer is *"this is
+doable and I did not do it"*, not *"this cannot be done"*, and calling it blocked
+would repeat exactly the mistake this session kept making.
+
+## The pattern, since it is the most useful output
+
+Five times a constraint was stated confidently and then re-quoted instead of
+re-tested:
+
+- **USDC** — "the faucet is gated" became "the asset is unobtainable". Tinyman
+  sells it permissionlessly.
+- **Claude in Chrome** — "unavailable". Chrome was not running because the disk
+  was 97% full; it paired in seconds once launched.
+- **Supabase** — "deleted, NXDOMAIN". It answers 401.
+- **F5 / F8** — "the signer key was lost". It had been replaced hours earlier.
+- **The persistence probe** — reported LOST because it queried a column I had
+  invented, and never checked the write's error.
+
+Every one was cheap to re-test and none was re-tested until something forced it.
