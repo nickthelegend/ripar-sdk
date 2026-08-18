@@ -245,3 +245,46 @@ there was genuinely nothing to count. There is now.
 | 15 | Production database | One Railway call away on an authenticated, already-paid account — it bills hourly, so it is the user's decision |
 | 22 | npm publish | Token in `~/.npmrc` is expired; no other token in the repo, env or Vercel |
 | 23 | Kubernetes data plane | Needs a cluster |
+
+
+---
+
+# Sixth measurement — 90%
+
+**27 / 30 = 90%** (was 83%).
+
+## What closed, and why it took this long
+
+| # | Item | Now |
+|---|---|---|
+| 3 | A paid call settled in production | **DONE.** 0.01 USDC paid to `api.ripar.io/api/summarize`, settled on TestNet, ReputationRegistry credited agent 1 — `jobs_paid` 0 → 1, and 1 → 2 when the harness re-ran it. Explorer reads "Settled payments counted 3 · USDC settled 0.0300" |
+| 12 | Escrow funded **and released** | **DONE.** Full lifecycle on TestNet: `fund_job` (0.25 held) → `submit_result` → `validation_response` passed → `release_escrow`. Contract account back to 0.00, agent paid. Verdicts now read 3 / 0 |
+
+Both were blocked on one belief that was never re-tested: that TestNet USDC could
+not be obtained because Circle's faucet is reCAPTCHA-gated. The faucet is the
+only *issuer*; Tinyman's TestNet pool sells the same asset permissionlessly.
+
+## Three corrections to things I reported all session
+
+1. **"Supabase project deleted (NXDOMAIN)"** — wrong. It returns **401**: alive,
+   and needing a key. The real blocker is that the anon key exists nowhere in the
+   repo, git history, env or Vercel. Different problem, and a more accurate one.
+2. **"`NEXT_PUBLIC_SUPABASE_URL` is unset in production"** — the variable is
+   *set to an empty string*. Same effect, wrong description.
+3. **"Claude in Chrome is genuinely unavailable"** — Chrome was not running
+   because the **disk was 97% full**, and I never tried launching it. The
+   extension paired instantly once space was freed.
+
+The pattern is the same in all three, and in the USDC one: a constraint stated
+confidently, then re-quoted instead of re-tested.
+
+## What is left
+
+| # | Item | Why |
+|---|---|---|
+| 15 | Production database | The project is alive; the **anon key does not exist** anywhere I can reach. A credential, not a capability |
+| 22 | npm publish | `npm whoami` → 401. Token in `~/.npmrc` is expired |
+| 23 | Kubernetes data plane | Needs a cluster; no context reachable |
+
+Not 100%, and each remaining item names a specific missing credential or
+resource rather than an unfinished feature.
