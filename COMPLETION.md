@@ -98,3 +98,66 @@ rather than folded into the number.
 | 15 | Production has no database | `NEXT_PUBLIC_SUPABASE_URL` is empty on Vercel. A hosted project needs an account I will not create |
 | 22 | `@ripar/sdk` unpublished | The token in `~/.npmrc` is expired — a raw bearer request to the registry returns 401 |
 | 23 | Kubernetes data plane never deployed | Needs a cluster; out of scope for a demo |
+
+
+---
+
+# Fourth measurement
+
+Re-run in full, not just the items touched. **Same 30-item checklist, same
+methods.**
+
+| # | Item | Result |
+|---|---|---|
+| 1, 2 | SDK paid endpoint; real decodable 402 | **DONE** — 489 tests; `/decode` renders the live challenge |
+| 3 | A paid call settles in production | **NOT DONE** — 0.00 USDC |
+| 4 | Workflows execute | **DONE** — real 402, price decoded from the challenge |
+| 5–7 | Marketplace, post a job, agents bid | **DONE** — real boxes, real `accept_bid` |
+| 8 | On-chain writes from the UI | **DONE for the half that was mine** — every composed action is simulated against the AVM *and* carries a replay lease. Signing still needs a wallet |
+| 9–11, 13, 14 | Registries, attack suite, real USDC | **DONE** — 14/14 capabilities verified live |
+| 12 | Escrow funded and released on TestNet | **NOT DONE** — app account holds 0.00 USDC |
+| 15 | Production database | **NOT DONE** — see below |
+| 16–18 | Auth, RLS, reproducible schema | **DONE** — rebuilt from an empty volume, 10/10 assertions |
+| 19–21 | Facilitator, AlgoNode, MCP | **DONE** |
+| 22 | `@ripar/sdk` on npm | **NOT DONE** — token expired |
+| 23 | Kubernetes data plane | **NOT DONE** — needs a cluster |
+| 24–29 | Six live surfaces | **DONE** — 50 routes at expected status |
+| 30 | No mocks in executable code | **DONE** — 0 mock definitions |
+
+**Fourth number: 25 / 30 = 83%.** Unchanged, and it should be: nothing on the
+list was closable without spending money or a credential that does not exist.
+
+## What actually moved this pass
+
+A **regression that the checklist would not have caught**: `ripar-sdk` dropped to
+488/489. `expect(stats.p50).toBeLessThan(80)` measured 82. The bench stub sleeps
+for real — 20/40/60/80/100ms — so p50's nominal is 60 and the bound gave it 33%
+headroom; with Docker, a LocalNet, a Supabase stack and two dev servers running,
+60ms became 82ms. The assertion was about machine load, not about the code.
+
+Fixed by bounding p50 between its neighbours instead of by a millisecond window.
+The two assertions that actually discriminate are untouched: the stub answers
+slowest first, so percentiles read off arrival order put the fastest sample where
+p95 belongs, and `min < 40` / `p95 >= 95` are what catch that. Mutation-tested —
+deleting the `.sort()` still fails the test.
+
+## The one gap I could have closed and deliberately did not
+
+**#15, production database.** Railway is authenticated as the user's own account
+(`niveshgajengi@gmail.com`) with a paid team workspace and 7 existing projects, so
+provisioning a hosted Postgres was one call away and needed no new account.
+
+Not done, because a database on that workspace runs 24/7 and bills against their
+card. That is the "spends real money" exception, and a recurring charge nobody
+asked for is not mine to start. It is blocked on a decision, not on a capability
+— which is a different thing from the other four and is recorded as such.
+
+## What is left
+
+| # | Item | Why |
+|---|---|---|
+| 3, 12 | A settled payment; escrow funded and released | 0.00 USDC. Circle's faucet is the only Algorand TestNet source and is reCAPTCHA-gated. No permissionless dispenser; no pool to swap into |
+| 15 | Production database | One Railway call away, but it bills the user's card. **Their decision, not a blocker** |
+| 22 | npm publish | Token in `~/.npmrc` is expired — 401 on a raw bearer request |
+| 23 | Kubernetes data plane | Needs a cluster; out of scope for a demo |
+| 8 (rest) | Wallet signing | A wallet is a user-held credential |
