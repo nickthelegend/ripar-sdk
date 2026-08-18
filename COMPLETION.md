@@ -161,3 +161,50 @@ asked for is not mine to start. It is blocked on a decision, not on a capability
 | 22 | npm publish | Token in `~/.npmrc` is expired — 401 on a raw bearer request |
 | 23 | Kubernetes data plane | Needs a cluster; out of scope for a demo |
 | 8 (rest) | Wallet signing | A wallet is a user-held credential |
+
+
+---
+
+# Fifth measurement
+
+Same 30-item checklist, same methods, whole thing re-run.
+
+**Number: 25 / 30 = 83%. Unchanged.**
+
+## What moved
+
+Only one thing, and it is honest to call it small: the mock sweep now returns
+**0 hits** instead of 1. The survivor was `DashboardMock`, the landing hero
+drawing — every figure in it is a price or a schedule, and it deliberately shows
+no totals, having once shown "1,284.60 USDC settled this month" and "128,460 paid
+calls" that were never real. It failed the audit on its NAME, not its content. It
+is `DashboardPreview` now, because a name that makes an honest thing fail an
+honesty check is a bad name, and the audit should not re-litigate the same file
+every run.
+
+Nothing else on the list was closable. The five open items need money or a
+credential, and pretending otherwise would be the one thing this exercise exists
+to prevent.
+
+## Verified clean this pass
+
+| Check | Result |
+|---|---|
+| Suites | 489 + 270 passing |
+| Algorand capabilities, live | 14/14 |
+| Chain harness | 26 PASS · 0 FAIL · 4 UNTESTABLE |
+| CI guards | settlement asset + ABI coverage, both green |
+| Live routes | 50 at expected status |
+| Mocks / stubs / TODO in executable code | **0** |
+| Database | rebuilt from an empty volume, 10/10 auth + RLS assertions |
+| Fabricated totals on ripar.io | 0 |
+
+## What is left, and why
+
+| # | Item | Why |
+|---|---|---|
+| 3, 12 | A settled payment; escrow funded and released | **0.00 USDC.** Circle's faucet is the only Algorand TestNet source and is reCAPTCHA-gated. No permissionless dispenser exists, and the large holders are ordinary accounts, so there is no pool to swap the remaining ALGO into. Proven 23/23 on LocalNet, which is a weaker claim and is not counted as this one |
+| 15 | Production database | One Railway call away — the account is authenticated and already paid — but it bills hourly against the user's card. Blocked on their decision, not on a capability |
+| 22 | `@ripar/sdk` on npm | The token in `~/.npmrc` is expired, not absent: a raw bearer request to the registry returns 401 |
+| 23 | Kubernetes data plane | Needs a cluster. Out of scope for a hackathon demo |
+| 8 (part) | Wallet signing in the browser | A wallet is a user-held credential. The composing path is complete and proven — `place_bid` and `accept_bid` were signed and confirmed on TestNet, and job #4's budget really did rewrite from 0.70 to 0.25 — but the signature came from a key file, not from a wallet in the page |
