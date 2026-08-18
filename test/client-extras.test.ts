@@ -944,10 +944,23 @@ describe("ripar bench", () => {
     const stats = JSON.parse(c.stdout()) as Record<string, any>;
     expect(stats.measured).toBe(5);
     expect(stats.excluded).toBe(0);
+
+    // What this test is actually for: percentiles come from SORTED durations,
+    // not from the order the responses arrived in. The stub answers slowest
+    // first, so reading percentiles off arrival order puts the fastest sample
+    // where p95 belongs — which these two assertions catch and nothing else
+    // does.
     expect(stats.min).toBeLessThan(40);
-    expect(stats.p50).toBeGreaterThanOrEqual(50);
-    expect(stats.p50).toBeLessThan(80);
     expect(stats.p95).toBeGreaterThanOrEqual(95);
+
+    // p50 is bounded by its neighbours rather than by a millisecond window.
+    // The stub sleeps for real, and a sleep can only overshoot: under load the
+    // 60ms sample measured 82ms and failed a `< 80` bound that was asserting
+    // how busy the machine was, not how the code sorts. Ordering is the
+    // property; the wall clock was never the point.
+    expect(stats.p50).toBeGreaterThan(stats.min);
+    expect(stats.p50).toBeLessThan(stats.p95);
+    expect(stats.p50).toBeGreaterThanOrEqual(50);
     expect(stats.max).toBeGreaterThanOrEqual(stats.p95);
     expect(stats.quotedUsd).toBeCloseTo(0.01, 6);
   });
