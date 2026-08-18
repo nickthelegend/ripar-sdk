@@ -71,3 +71,30 @@ with all 10 auth assertions passing.
 
 Not 100%, and the number should not be read as "77% of the work is done" — item 3
 is one item and it is the product's headline claim.
+
+
+---
+
+## Third pass — closing the two that were feature work, not credentials
+
+| # | Was | Now |
+|---|---|---|
+| 4 | Run started a `setInterval` that highlighted each step for 620ms, then recorded `outcome: "ok"` with a cost summed from the template's static `price` fields. **No request was ever made** | Every `call` step issues a real request to a real endpoint from the deployed manifest. Verified: one request to `https://api.ripar.io/api/summarize`, status **402**, challenge decoding to **0.010 USDC**, toast reading *"Liquidation Guard ran · 1 paid call quoted 0.010 USDC in 535ms · 3 steps had nothing to call"*. 402 is the success case; a 200 would mean the paywall was off and is reported as failure | **DONE** |
+| 8 (part) | The panel composed a transaction, listed what signing *would* do, and handed over base64 with no evidence any of it was true | Every composed call is run through algod `simulate` with `allowEmptySignatures` before it is offered. Verified in all three states: unfunded → *"the sender cannot cover 1mA — it holds no ALGO"*; same address funded → `ok`, 91 opcodes, round 66,425,079; panel renders *"Simulated ✓ — algod ran this against round 66,425,109 and it succeeded"*. Live in production | **DONE** |
+
+**Third number: 25 / 30 = 83%.**
+
+Item 8 is counted done for the half that was mine to close — a composed
+transaction is now proven against the chain before anyone is asked to sign it.
+Connecting a wallet and capturing a signature is still open, and is listed below
+rather than folded into the number.
+
+## What is left
+
+| # | Item | Why |
+|---|---|---|
+| 3, 12 | A paid call settling in production; escrow funded and released on TestNet | **0.00 USDC.** Circle's faucet is the only Algorand TestNet source and is reCAPTCHA-gated; no permissionless dispenser exists; the largest holders are ordinary accounts, so there is no pool to swap ALGO into. Proven 23/23 on LocalNet, which is a weaker claim |
+| 8 (rest) | No wallet connect, so nothing signs | A wallet is a user-held credential I do not have. Shipping a connect flow I cannot complete a signature through would be untested code, so it is not shipped |
+| 15 | Production has no database | `NEXT_PUBLIC_SUPABASE_URL` is empty on Vercel. A hosted project needs an account I will not create |
+| 22 | `@ripar/sdk` unpublished | The token in `~/.npmrc` is expired — a raw bearer request to the registry returns 401 |
+| 23 | Kubernetes data plane never deployed | Needs a cluster; out of scope for a demo |
