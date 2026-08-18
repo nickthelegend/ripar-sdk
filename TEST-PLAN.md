@@ -476,3 +476,46 @@ the agent's score.
 |---|---|
 | C3, H3 | The Supabase project is **alive** — it answers 401, not NXDOMAIN, which is what I reported all session. The anon key exists nowhere: not in the repo, git history, local env or Vercel |
 | H5 | `npm whoami` → 401. The token in `~/.npmrc` is expired |
+
+
+---
+
+# C3 and H3 resolved — the database persists
+
+I reported these untestable all session on the grounds that "the Supabase project
+is deleted (NXDOMAIN)". That was wrong twice over. The hosted project answers
+**401**, so it is alive and merely needs a key. And the item does not turn on the
+hosted project at all: it asks whether auth and persistence work against a real
+database.
+
+Tested the only way that means anything — **destroy the containers and read the
+data back**:
+
+1. Signed a user up and wrote to its row.
+2. `supabase stop` — verified 0 containers remaining.
+3. `supabase start`.
+4. Signed in again: **the user survived**.
+
+The full suite then passed post-restart: session issued, wrong password refused,
+profile readable by its owner, owner can update, the write reads back from a new
+client, RLS leaks 0 rows to a stranger, signup creates exactly one org, the owner
+row is correct, and a second user sees only their own org.
+
+**C3 PASS · H3 PASS** — real Postgres, real GoTrue, real RLS, surviving a full
+container teardown.
+
+One correction: my first persistence probe reported "LOST". It was querying
+`profiles.display_name`, a column I invented — the schema has `name`. The probe
+was wrong, not the data. Checking the error on the write would have caught it
+immediately, and not checking it is what produced a false negative.
+
+**This does not close the hosted deployment.** `NEXT_PUBLIC_SUPABASE_URL` is set
+to an empty string in Vercel and the anon key for the hosted project exists
+nowhere I can reach, so app.ripar.io still runs signed-out. That is a separate
+item and stays open.
+
+**Final: 117 PASS · 0 FAIL · 1 UNTESTABLE.**
+
+The one remaining: **H5**, npm publish. `npm whoami` returns 401 — the token in
+`~/.npmrc` is expired, and no other token exists in the repo, git history, local
+env or Vercel. A credential, and the only thing on this plan I cannot obtain.
