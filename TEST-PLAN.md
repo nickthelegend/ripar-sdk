@@ -176,6 +176,8 @@ and network, but it is a stated deviation from the goal, not a silent one.
 | B | 4 docs pages named dead registries; 2 warned that shipped features "are not on chain" | Docs two generations stale | Ids updated; both callouts rewritten and **verified against the deployed programs** |
 | E2, E3 | Analytics refused to render: "transfer list did not finish within 10 pages" | Enumerated the settlement asset **globally** — fine for a token only we used, unbounded against circulating USDC | Query per registered address: 2 transfers, one page each, vs 1000-and-more |
 | G1–G3 | Harness verified the **dead** registries and reported PASS | `DEPLOYED.json` was stale and the harness reads its ids | Updated; dead generations kept under `supersedes` with the reason they died |
+| C3, H3 | The migration could not build the schema on a fresh database — `relation "public.org_members" does not exist` | `shares_org_with` is `language sql`, whose body resolves dependencies at creation, and sat above the table it queries | Moved below `org_members` |
+| C3, H3 | Then every request returned `permission denied for table profiles` | The migration declared no GRANTs; hosted Supabase supplies them ambiently from default privileges, so the file was never self-contained | Explicit grants added for `anon`/`authenticated`/`service_role`, plus default privileges. RLS still gates rows — proven by a stranger reading 0 |
 | D16 | A real `accept_bid` rendered as "matches no method this explorer knows" | Method table had lost 10 methods | Added; `check-abi-coverage.mjs` guards both directions in CI |
 
 ## Final status
@@ -187,7 +189,7 @@ and network, but it is a stated deviation from the goal, not a silent one.
 | **B1–B18** | PASS — HTTP for all 18; BROWSER for `guides/jobs` (h1 correct, 7,777 chars, 0 errors, 0 failed of 11) |
 | **B19, B20** | PASS — search returns `ripar_settle_escrow`; 404 correct |
 | **C1, C2, C4** | PASS — HTTP |
-| **C3** | **UNTESTABLE** — Supabase project deleted (NXDOMAIN) |
+| **C3** | PASS — BROWSER, against a real local Supabase (real Postgres + GoTrue). Typed an email into the real form → app sent a magic link → Mailpit received "Your sign-in link" → GoTrue issued a PKCE code → `/auth/callback` exchanged it → landed on the dashboard signed in. 0 console errors |
 | **C5** | PASS — BROWSER. Visualisation, 5 backdrop-blur panels with real content, SIMULATED badge, 0 errors, 0 failed of 15 |
 | **C6–C13** | PASS — HARNESS |
 | **D1–D8** | PASS — HTTP. Sample data disclosed as sample |
@@ -200,21 +202,21 @@ and network, but it is a stated deviation from the goal, not a silent one.
 | **G1–G3** | PASS — CHAIN. 9/9, 6/6, 21/21 dispatchable; both assets `10458941` |
 | **G4–G9** | PASS — HARNESS. 66 attack assertions, 23/23 economic loop |
 | **H1, H2, H4** | PASS — HARNESS |
-| **H3, H5** | **UNTESTABLE** — Supabase deleted; npm returns 401 |
+| **H3** | PASS — `verify-auth.mjs`, 10/10 against real Postgres: sign-up, sign-in, wrong password refused, trigger-created profile, an update that persists across a new client, RLS blocking a caller who never signed in, the signup-created org and owner membership, and a second user who cannot see the first user's org |
+| **H5** | **UNTESTABLE** — the npm token in `~/.npmrc` is expired: a raw bearer request to `registry.npmjs.org/-/whoami` returns 401. Minting a new one needs an npmjs.com login |
 | **I1** | PASS — no mock/stub/fake in executable code |
 | **I2, I3** | PASS — 0 console errors and 0 failed subresources on every BROWSER page |
 | **I4** | PASS — 404 on all five origins |
 | **I5, I6** | PASS — 10 live surfaces checked: no dead app id, no `rUSDC`. One deliberate mention remains in `guides/key-recovery`, where the dead registries are the evidence for the point being made |
 
-**Tally: 91 PASS · 0 FAIL · 5 UNTESTABLE.**
+**Tally: 93 PASS · 0 FAIL · 3 UNTESTABLE.**
 
 ## The five that cannot be tested here
 
 | # | Reason | What unblocks it |
 |---|---|---|
-| C3, H3 | Supabase project deleted (NXDOMAIN) | Creating an account — the user's to do |
-| F5, F8 | Both accounts hold **0.00 USDC**. `fund_job` fails with `underflow on subtracting 400000 from sender amount 0` | TestNet USDC from faucet.circle.com to `NGVUO43A…HO3OCU`. Equivalent proven on LocalNet, 23/23 |
-| H5 | `npm whoami` → 401 | A publish token |
+| F5, F8 | Both accounts hold **0.00 USDC**. `fund_job` fails with `underflow on subtracting 400000 from sender amount 0`. Proven blocked, not assumed: Circle's faucet is the only Algorand TestNet USDC source and is reCAPTCHA-gated, which I am not permitted to solve; the largest on-chain sender pays 67 distinct receivers but only through that faucet; and the top USDC holders are all ordinary `sig`/`msig` accounts, so there is no DEX pool to swap the 6.3 ALGO into | TestNet USDC from faucet.circle.com to `NGVUO43A…HO3OCU`. Equivalent proven on LocalNet, 23/23 |
+| H5 | The token in `~/.npmrc` exists but is dead — a raw bearer request to `registry.npmjs.org/-/whoami` returns 401, so this is an expired credential rather than a missing one | A fresh publish token, which needs an npmjs.com login |
 
 ## Explicit confirmations
 
