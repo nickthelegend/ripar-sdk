@@ -256,3 +256,87 @@ A successful workflow run and a successful `/decode` both leave
 console. Chrome logs every non-2xx at error level. A 402 is the paid endpoint
 answering correctly — it is the whole mechanism — and the only way to a silent
 console here is to not make the call. Stated rather than suppressed.
+
+
+---
+
+# Phase 1 addendum — rows for the surface added since
+
+| # | Item | Correct means |
+|---|---|---|
+| C15 | `place_bid` on an **open** job | Composes `place_bid(uint64,uint64,uint64,byte[])bool`; names IdentityRegistry in foreignApps; declares `ag_<agent>` on the OUTER call; covers the inner fee; `simulate.ok === true` |
+| C16 | `place_bid` on a **non-open** job | Refused by the action state machine, naming the job's status and what IS legal — not a chain error |
+| C17 | `accept_bid` with a real bid present | Composes; `simulate.ok === true`; summary states the budget REWRITE explicitly (bid replaces posted) |
+| C18 | `accept_bid` with no bid present | Refused — either by the state machine or by the AVM, never silently composed as valid |
+| C19 | `rotate_address` from the current holder | Composes; `simulate.ok === true`; effects name both reverse-index boxes |
+| C20 | `rotate_address` onto an address that already holds an agent | Refused, naming which agent that address controls |
+| C21 | `rotate_address` onto itself | Refused, saying it would change nothing |
+| C22 | `rotate_address` from an address controlling nothing | Refused, saying that address controls no agent |
+| C23 | Every composed action carries a replay lease | 32 bytes, present on the transaction; same action → identical; different args → different |
+| D22 | `/decode` against a real paid endpoint | Real 402; header name and byte count; price shown in base units AND divided by decimals; ticker resolved from the ASA when the challenge omits it |
+| D23 | `/decode` against a non-x402 URL | Reported as its own case: answered without asking for payment, so not gated |
+| D24 | `/decode` against a malformed URL | 400 naming the problem, not a crash |
+| D25 | Job board reflects the accepted bid | Job #4 shows **0.25 USDC**, assignee agent #2, status assigned — the rewritten budget, not the posted one |
+| G11 | The bid loop, on chain | `bd_4_2` box exists; `jb_4` decodes to budget 250000, assignee 2, status 1 |
+
+---
+
+# Phase 4 — full re-run
+
+| Group | Result |
+|---|---|
+| A–I (98 original rows) | **PASS** — 50 routes at expected status |
+| C15, C17 | **PASS** — `place_bid` / `accept_bid` compose and simulate ok on an open job |
+| C16, C18 | **PASS** — refused by the action state machine, naming the status and what IS legal |
+| C19 | **PASS** — `rotate_address` from the holder, `simulate.ok`, 82 opcodes |
+| C20 | **PASS** — refused, naming which agent the target already controls |
+| C21 | **FAIL → fixed → PASS** — see below |
+| C22 | **PASS** — refused, "controls no agent" |
+| C23 | **PASS** — 32-byte lease on every composed action |
+| D22 | **PASS** — `/decode`: real 402, 652-byte header, 0.01 USDC both ways |
+| D23, D24 | **PASS** — non-gated and malformed URLs each reported as their own case |
+| D25 | **PASS** — job #4 renders **0.25 USDC**, the rewritten bid, not the 0.70 posted |
+| G11 | **PASS** — `bd_4_2` box on chain; `jb_4` = budget 250000, assignee 2, status 1 |
+| Suites / guards / capabilities | 489 + 270; both guards; 14/14 |
+
+**Tally: 111 PASS · 0 FAIL · 3 UNTESTABLE.**
+
+## The one FAIL, and it passed for the wrong reason first
+
+**C21 — rotating an identity onto the address already holding it.** The plan said
+correct means "refused, saying it would change nothing". It *was* refused, so a
+pass/fail on outcome alone looked green. The message said
+*"already controls agent #1. One address holds at most one identity"* — true,
+and not the reason. The taken-address lookup fired first, because your own
+address obviously already controls your own agent, and a caller reading it would
+hunt for a conflict with some other identity instead of noticing they pasted the
+same address twice. Checked before the lookup now.
+
+## Two measurement mistakes of my own, recorded
+
+**A 404 hunt that found a real bug, but not the one I was chasing.** Two console
+404s appeared on the job board. `read_network_requests` showed every request at
+200, and a re-fetch of every resource showed zero failures — the first sweep used
+`cache: "force-cache"`, which serves a cached 200 over a real 404. Chasing it
+turned up genuinely missing `apple-touch-icon` links across all six surfaces,
+which Safari and iOS request by convention and which 404'd on every load; that is
+fixed and worth fixing. It was **not** the cause. A fresh tab showed **zero**
+console errors: the entries were stale buffer from that tab's earlier localhost
+navigation, and `read_console_messages(clear: true)` returns the buffer *before*
+clearing, which fooled me twice.
+
+## Console errors that are correct behaviour
+
+A successful workflow run and a successful `/decode` each leave a `402` in the
+console. Chrome logs every non-2xx at error level; a 402 is the paid endpoint
+answering, and the only way to silence it is to not make the call.
+
+## Confirmations
+
+Zero mocks, zero stubs, zero fallback data on any tested path — 0 mock
+definitions in executable code. Zero console errors and zero failed requests on
+every page loaded in a clean tab. No regressions.
+
+## Untestable (3, unchanged)
+
+TestNet USDC behind a reCAPTCHA (F5, F8); an expired npm token (H5).
