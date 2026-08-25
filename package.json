@@ -44,18 +44,18 @@
   },
   "dependencies": {
     "@algorandfoundation/algokit-utils": "^9.1.0",
-    "@x402/avm": "^2.20.0",
-    "@x402/core": "^2.20.0",
-    "@x402/express": "^2.20.0",
-    "@x402/fetch": "^2.20.0",
-    "algosdk": "^3.0.0",
+    "@x402/avm": "^2.23.0",
+    "@x402/core": "^2.23.0",
+    "@x402/express": "^2.23.0",
+    "@x402/fetch": "^2.23.0",
+    "algosdk": "^3.7.0",
     "express": "^5.0.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^26",
     "typescript": "^5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=20"
