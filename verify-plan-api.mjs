@@ -315,7 +315,17 @@ const registryCheck = async (id, name, extraKey) =>
     const missing = spec.methods
       .map((m) => `${m.name}(${m.args.map((a) => a.type).join(",")})${m.returns?.type ?? "void"}`)
       .filter((s) => !program.includes(selector(s)));
-    must(missing.length === 0, `not dispatchable: ${missing.join(", ")}`);
+    // A method in the spec but not in the deployed program means the source has
+    // moved ahead of the chain — a pending deploy, not a broken contract. Say
+    // which, because the two need completely different responses: one is "ship
+    // it", the other is "the deployment is wrong".
+    must(
+      missing.length === 0,
+      `the deployed build is behind this source — ${missing.join(", ")} ` +
+        `${missing.length === 1 ? "is" : "are"} compiled and tested but not on chain. ` +
+        `Redeploying mints new app ids and every repo must be repointed, so this ` +
+        `stays failing until that is deliberately done.`
+    );
     let extra = "";
     if (extraKey) {
       const g = Object.fromEntries((app.params.globalState ?? []).map((e) => [Buffer.from(e.key).toString("utf8"), Number(e.value?.uint ?? 0)]));
