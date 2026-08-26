@@ -216,7 +216,25 @@ export class RiparClient {
       // Registering the constant means no scheme is ever found and the client
       // cannot pay anything — server.ts already uses the wildcard for exactly
       // this reason; the client was missed.
-      const client = new x402Client().register("algorand:*", new ExactAvmScheme(signer));
+      // `spendControls: false` because this client already enforces its own.
+      //
+      // @x402/core 2.23 added a spend-control layer that defaults to a $1
+      // per-payment cap and to allowing only the assets `findDefaultAsset`
+      // recognizes. Both defaults are silent, and both are wrong here: the cap
+      // this SDK is asked to honour is the one the caller configured
+      // (`maxUsdPerCall` / `maxUsdPerDay`, checked in callOnce and re-checked
+      // on every retry), and the asset is whatever the registry was
+      // bootstrapped with. Leaving the upstream layer on means a caller who
+      // sets a $5 cap gets a $1 one, and a deployment settling in an asset the
+      // upstream list has never heard of cannot pay at all — each failing at
+      // payment time with an error about a control the caller never set.
+      //
+      // Turning it off is not removing a safety net; it is declining a second,
+      // undocumented one that overrides the first.
+      const client = x402Client.fromConfig({
+        schemes: [{ network: "algorand:*", client: new ExactAvmScheme(signer) }],
+        spendControls: false,
+      });
       this.paidFetch = wrapFetchWithPayment(this.baseFetch, client) as typeof fetch;
     }
   }
