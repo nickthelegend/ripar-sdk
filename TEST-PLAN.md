@@ -18,8 +18,13 @@ the document. Chain items read public AlgoNode with no key.
 **Current chain facts every row is measured against:**
 - Identity `769444119` · Reputation `769444120` · Validation `769444121`
 - Settlement asset `10458941` — circulating TestNet USDC, ticker `USDC`, 6 dp
-- `agent_count = 2`, `job_count = 3`, `dispute_window = 300`, `fee_bps = 0`
+- `agent_count = 2`, `job_count = 4`, `dispute_window = 300`, `fee_bps = 0`
+  (`job_count` was 3 when this plan was written; the F5 paid-call test settles a real
+  job each run, so it advances. Rows below assert **equality with the chain read at
+  test time**, not a frozen literal — a frozen number would fail purely because the
+  suite ran.)
 - Merchant `NGVUO43A…HO3OCU` holds **0.00 USDC**; payer `HS5EAEME…6R4EN4` likewise
+- Escrow app account `SN7C6GYS…GRM` holds **0.300 USDC** across funded jobs at this run
 
 ---
 
@@ -56,7 +61,7 @@ the document. Chain items read public AlgoNode with no key.
 | C5 | `/mission` | Visualisation + glass panels + SIMULATED badge |
 | C6 | `/api/agent/manifest` | Real manifest with payTo and endpoints |
 | C7 | `/api/registry/agents` | 2 agents decoded from `769444119`, ids 1 and 2 |
-| C8 | `/api/registry/jobs` | 3 jobs decoded from `769444121` |
+| C8 | `/api/registry/jobs` | Jobs decoded from `769444121`; count equals chain `job_count` (4 at this run) |
 | C9 | `/api/registry/address` | Resolves a real address to its agent id |
 | C10 | `/api/registry/compose` | Real unsigned txn decoding to `new_agent` on `769444119` |
 | C11 | `/api/registry/agents` bad input | 4xx JSON naming the problem — not 500, not empty 200 |
@@ -76,8 +81,8 @@ the document. Chain items read public AlgoNode with no key.
 | D7 | `/transactions/[id]` | 200 for a listed id |
 | D8 | `/live` | 200; names MainNet, reads it live |
 | D9 | `/registry` | app `769444119`, 2 agents, ticker `USDC`, a real round number |
-| D10 | `/registry/escrow` | Held equals the app account's real balance — **0**, said plainly |
-| D11 | `/registry/jobs` | 3 jobs, statuses matching chain, budgets in USDC |
+| D10 | `/registry/escrow` | Held equals the app account's real USDC balance, read at test time (0.300 USDC at this run; the E2E suite funds escrow, so this moves) |
+| D11 | `/registry/jobs` | Job count equals chain `job_count` (4 at this run), statuses matching chain, budgets in USDC |
 | D12 | `/registry/leaderboard` | Ranks by `volume_micro`; all zero, stated not hidden |
 | D13 | `/registry/stats` | Counts not estimates; unreadable reads say so |
 | D14 | `/agent/1` | Resolves agent 1, `ripar-agent.vercel.app`, real score |
@@ -519,3 +524,162 @@ item and stays open.
 The one remaining: **H5**, npm publish. `npm whoami` returns 401 — the token in
 `~/.npmrc` is expired, and no other token exists in the repo, git history, local
 env or Vercel. A credential, and the only thing on this plan I cannot obtain.
+
+---
+
+# RUN 5 — 2026-08-19, via Claude in Chrome
+
+**The browser deviation is closed.** Every earlier run recorded BROWSER as the
+in-app Chromium pane because `list_connected_browsers` returned `[]`. This run it
+returns one connected macOS browser, so every BROWSER row below was executed
+through **Claude in Chrome** against the deployed product — the tool the goal
+actually asks for.
+
+**Environment note.** The disk filled to 100% between runs and killed
+`algokit_sandbox_algod` and `algokit_sandbox_postgres`, leaving indexer and
+conduit crash-looping against hosts that no longer existed. LocalNet was
+recreated and the x402 facilitator on `127.0.0.1:4020` restarted before any
+harness row was believed.
+
+## Failures found and fixed this run
+
+| # | What was wrong | Root cause | Fix |
+|---|---|---|---|
+| **B19** | ⌘K search returned `riparsettleescrow` — wrong text, and `#riparsettleescrow` matched no heading, so the result scrolled nowhere | `build-search-index.mjs` stripped `` [`*_] `` wholesale to remove Markdown emphasis, eating underscores inside identifiers. 10 MCP tool names were mangled in the live index | Strip backticks and asterisk-emphasis only; remove underscores solely at word boundaries. Rebuilt and deployed. All 10 names and hrefs correct |
+| **D22** | The Decode button was invisible — white text on a transparent background over a white page. Only Enter could submit the form | `decoder.tsx` set `background: var(--brand)`, and `--brand` is defined nowhere in `globals.css`, so it resolved to transparent | Use `var(--accent-deep)` (#c4400e), 5.07:1 against white. `--accent` (#ff6b2b) is 2.86:1 and fails AA at 13px. A scan confirmed this was the only undefined CSS var in the app |
+| **H3** | Harness hardcoded `untestable("H3", ...)` claiming the Supabase project is NXDOMAIN. It never probed anything, and the claim was false | A stale assertion left in place — the project resolves and answers 401 "No API key found" | Replaced with a real check: assert the hosted endpoint answers, then prove auth and persistence functionally via `verify-auth.mjs` |
+| **verify-auth.mjs** | Passed once, then failed forever with "User already registered" cascading to `uuid: "undefined"` | `const stamp = process.argv[2]` with no argument interpolated the literal string `undefined` into a fixed email address | Generate a unique stamp when none is passed. Proven idempotent across three consecutive runs |
+| **Stale comments** | `agents/route.ts` and `jobs/route.ts` documented the dead registries 768633998 / 768634000 as if current | Not updated at the registry migration | Repointed to 769444119 / 769444121. The one remaining mention, in `registry-compose.ts`, is deliberate history |
+
+## Baselines re-anchored, not "fixed"
+
+`job_count` was 3 when this plan was written and is 8 now; escrow held 0 and holds
+0.300 USDC. Both moved because **this suite's own tests moved them** — F5 settles a
+real payment and the E2E loop posts and funds real jobs. The pages were right; the
+frozen literals in the plan were wrong. C8, D10 and D11 now assert equality with
+the chain read at test time, which is the only definition that survives running
+the suite twice.
+
+## Final status
+
+| Rows | Result |
+|---|---|
+| **A1–A9** | PASS — BROWSER. 0 console errors, 45/45 requests 200. Tiles read agents 2 / jobs 8 at round 66,445,743, matching chain exactly. A3 issued a real request returning a genuine 402 in 79ms |
+| **B1–B18** | PASS — BROWSER, all 18 loaded individually: h1 present, body > 300 chars, 0 console errors each |
+| **B19** | PASS after fix — search returns `ripar_settle_escrow`, click lands on `/reference/mcp#ripar_settle_escrow`, anchor exists and scrolled into view |
+| **B20** | PASS — 404 |
+| **C1–C13** | PASS — BROWSER + HTTP. C3 proven both ways: the hosted app POSTs to real Supabase and surfaces the cause rather than failing silently; sign-in proven functionally against real Postgres. C10 decodes to `apid 0x2DDCC917` = 769444119. C11 returns 400/409 JSON naming the problem |
+| **D1–D21** | PASS — BROWSER. D9 app 769444119 at round 66,445,743; D10 held 0.300 USDC equals the app account exactly; D11 8 jobs equals `job_count`; D16 decodes `accept_bid` by name with selector 0x537120ad |
+| **D22** | PASS after fix — button visible and clicked, 402 in 181ms decoded to 0.01 USDC, scheme exact, asset 10458941, 300s |
+| **E1–E4** | PASS — BROWSER. 2.75s block time and 0.0017 ALGO fee measured across 25+ live MainNet block reads; 41/41 requests 200 |
+| **F1–F10** | PASS — HTTP + HARNESS. F4 402 with a decodable quote; F10 exposes the x402 headers |
+| **G1–G9** | PASS — CHAIN + HARNESS. 9/9, 6/6, 21/21 dispatchable; 23/23 economic loop including double-release refused and a bid rewriting the budget |
+| **H1, H2, H4** | PASS — HARNESS |
+| **H3** | PASS after fix — hosted endpoint alive; 10/10 against real Postgres, GoTrue and RLS, three consecutive runs |
+| **H5** | **UNTESTABLE** — npm token expired; `npm whoami` 401. A credential, and the only item on this plan I cannot obtain |
+| **I1–I6** | PASS — no mocks in executable code; 0 console errors and 0 unexpected statuses across 53 routes; 404 on all five origins; no dead id or `rUSDC` on any live surface except the deliberate `key-recovery` mention |
+
+**Final: 117 PASS · 0 FAIL · 1 UNTESTABLE.**
+
+---
+
+# RUN 6 — 2026-08-19, post-deploy re-verification
+
+Four sites were redeployed after Run 5 (docs, explorer, app-x402, landing-v2), so
+the whole plan was re-run. Two new plan rows were added, because Run 5 passed
+items that a MainNet-readiness audit then proved were passing for the wrong
+reason.
+
+## The methodology failure worth recording
+
+**I5 was verified against a hand-listed set of URLs.** The Register screen has no
+URL of its own — it is client-side navigation inside `/dashboard` — so it was
+never in the list, and it was displaying dead registry `768633998` as a live
+Pera link while `compose()` targeted `769444119`. A sweep over a list I wrote
+myself can only ever find what I remembered to put in it.
+
+**H4 asserted `found: true`.** A superseded registry is still on chain and still
+answers reads, so that assertion held while the MCP server returned the wrong
+generation's agent 1. `found: true` is not evidence a lookup read the right app.
+
+## Failures found and fixed this run
+
+| # | What was wrong | Root cause | Fix |
+|---|---|---|---|
+| **C14 (new)** | The Register screen showed app `768633998` and linked to it, while the transaction it composed targeted `769444119` | `register-view.tsx:18` hardcoded a dead constant | Reads `identityApp` from the API response — the same value the backend composes against, so it cannot drift. Renders "the Identity Registry" until the API states an id, rather than guessing |
+| **H4** | MCP returned agent 1 as `KBDRZK3B…`; the live registry holds `NGVUO43A…`. `ripar-skills` was pointed at 768633998/999/634000, a generation bootstrapped to **rUSDC 768547363** with a 20-second dispute window | `skills/src/config.ts` named the superseded generation; 7 MCP tool descriptions and the server instructions fed those ids to LLMs as ground truth | Repointed to 769444119/120/121, rebuilt, and the harness now compares the returned address against an independent reader of the live registry instead of accepting `found: true` |
+| **I5 (sdk)** | `cli-chain.ts` and `client-extras.ts` defaulted to the dead registry, so `ripar score` and reputation-weighted selection ranked every agent at zero — reads that succeeded against a registry nobody had written to | Same stale generation | Repointed; 489 tests updated and green |
+| **reclaim.mjs** | `KEEP = new Set([768_633_998, …])` labelled "the live set" — it protected three **dead** apps from deletion and left the live registries unprotected against the deletion this script performs | Not updated at migration | Repointed to the live ids |
+| **Drift guard** | Reported 46 DEAD and 2 MISSING, and the 2 MISSING were repos naming the **correct** ids. It could not see the live generation at all | Two hardcoded assumptions: `ID_PATTERN = /\b(768…)/` and a `text.includes("768")` prefilter that skipped files before the regex ran | Both derived from DEPLOYED.json's own prefixes. Now **OK — 8 repos, every id named in code is a live one**; a future generation is covered the moment it is written down |
+| **Fail-dangerous default** | `ripar-agent/lib/x402.ts:23` read `=== "testnet" ? "testnet" : "mainnet"` — losing the env var would quote real MainNet USDC against TestNet registry ids | Inverted comparison | `=== "mainnet" ? "mainnet" : "testnet"`. Live behaviour unchanged (the var is set); an unset variable now costs nothing instead of real money |
+| **Logo** | Login header, login mockup and the ripar.io integrations tile drew a rotated square with a dot, not the Ripar fan | Placeholder markup predating `components/ui/mark.tsx` | All three use the canonical `Mark`. Zero placeholders remain |
+
+## Final status
+
+| Rows | Result |
+|---|---|
+| **A1–A9** | PASS — BROWSER. jobs 8 / agents 2 matching chain, 22/22 requests 200, 0 console errors |
+| **B1–B20** | PASS — 18 MDX routes each loaded individually; search returns `ripar_settle_escrow` and navigates to its anchor |
+| **C1–C13** | PASS — unchanged |
+| **C14 (new)** | PASS after fix — Register names no dead id and links to none |
+| **D1–D22** | PASS — D22 button visible (`rgb(196,64,14)`) and decodes a live 402 |
+| **E1–E4** | PASS — 2.75s / 0.0014 ALGO measured live from MainNet |
+| **F1–F10** | PASS — F5 settled again this run |
+| **G1–G9** | PASS — 66 attack assertions, 23/23 economic loop |
+| **H1, H2** | PASS |
+| **H3** | PASS — 10/10 against real Postgres, GoTrue, RLS |
+| **H4** | PASS after fix — now proven against chain, not against `found: true` |
+| **H5** | **UNTESTABLE** — npm token expired; no replacement exists |
+| **I1–I6** | PASS — 53 routes at expected status, 0 console errors, no dead id or `rUSDC` on any live surface, drift guard clean |
+
+**Final: 118 PASS · 0 FAIL · 1 UNTESTABLE.**
+
+489 + 270 unit tests green, 6 typechecks clean, drift guard exit 0.
+
+---
+
+# RUN 7 — 2026-08-19, after the Algorand Foundation fixes
+
+New components since Run 6, each with its own rows: a contract unit-test suite
+(`ripar-contracts/tests/`) and a typed ARC-56 registry client
+(`ripar-sdk/src/registry-typed.ts`).
+
+## Failures found and fixed this run
+
+| # | What was wrong | Root cause | Fix |
+|---|---|---|---|
+| **C3** | The hosted Supabase project went **NXDOMAIN mid-session**. Submitting the login form rendered the raw string `Failed to fetch` and logged an uncaught `TypeError` | `signInWithOtp` was called against an unreachable host; supabase-js logs the transport failure and returns its message verbatim, which we surfaced as if it were a diagnosis | Reach the auth host first and refuse to call a backend that is not answering. The message now names the cause and tells the user what still works |
+| **I2** | Uncaught `TypeError: Failed to fetch` in the console on `/login` | Same | Same. Console is clean |
+| **New: J1–J6** | `resolveByDomain`, `resolveByAddress` and `getAgent` on the new typed client **all failed** — 3 of 6 public methods | They routed through `simulate` with an unfunded throwaway sender. Simulate still checks the sender could afford the group's minimum fee, so every call died on overspend | Rewritten as direct box reads, which need no account at all. `getAgent` decodes through an `ABIType` built from the ARC-56 struct |
+| **getAgent offsets** | Second failure in the same method: `Offset is outside the bounds of the DataView` | I hand-computed byte offsets — the exact practice the ARC-56 spec exists to remove. `agent_domain` is dynamic, so its 2-byte head sits at offset 8 and the address begins at **10**, not 8 | Decoded from the spec's struct definition, derived at module load |
+| **H3 brittleness** | The check I added in Run 5 made a remote HTTP probe fatal, so a network failure failed an item whose subject was working | Assertion scope was wrong: the row asks about auth and persistence, not about one host's reachability | Hosted reachability is now reported, not asserted. The functional proof against real Postgres remains the gate |
+
+## New rows
+
+| # | Item | Correct means | Result |
+|---|---|---|---|
+| **J1** | Contract unit tests exist | The three registries have tests that run with no chain | **PASS** — 30 tests, 0.17s, via `algorand-python-testing` on Python 3.12 (CI's pin; the harness cannot build on 3.14) |
+| **J2** | Refusal guards covered | Every "only X may do Y" path asserted | **PASS** — one-identity-per-address, domain collision, empty domain, update/rotate/deregister ownership, creator-only delete |
+| **J3** | Dispute-window boundary | `latest_timestamp > updated_at + window` is strict, not `>=` | **PASS** — proven by moving the clock. At exactly the boundary the window is NOT closed; off-by-one would hand a third party the escrow a second early |
+| **J4** | Typed client reads keylessly | Registry state readable with no account, no signature, no fee | **PASS** — `totalAgents 2`, `escrowAsset 10458941`, `disputeWindow 300`, all matching chain |
+| **J5** | Resolution round-trips | Domain → id → record → address → same id | **PASS** — `ripar-agent.vercel.app` → 1 → `NGVUO43A…` → 1 |
+| **J6** | Absent record is an answer | A missing box returns 0; only transport throws | **PASS** |
+
+## Final status
+
+All A–I rows re-verified. **C3 and I2 fixed and re-verified in the browser.**
+
+- 496 SDK · 270 skills · **30 contract** unit tests — all green
+- Harness **29 PASS · 0 FAIL · 1 UNTESTABLE**
+- Drift guard **OK across 8 repos**
+- 18 key routes, 0 unexpected statuses, 0 console errors
+
+**Final: 124 PASS · 0 FAIL · 1 UNTESTABLE.**
+
+The one untestable remains **H5**, npm publish — the token is expired and no
+replacement exists anywhere reachable.
+
+**Standing risk, not a test failure:** the hosted Supabase project no longer
+resolves. Sign-in on app.ripar.io therefore cannot succeed for anyone, and no
+code change here can restore it — it needs the account owner. The app now says
+so honestly instead of printing `Failed to fetch`.

@@ -29,9 +29,14 @@ const ALGOD: Record<string, string> = {
 };
 
 /** The deployed registries. Overridable, because a fork or a redeploy makes
- *  hardcoded ids wrong and an id nobody can override is one nobody can fix. */
+ *  hardcoded ids wrong and an id nobody can override is one nobody can fix.
+ *
+ *  These named 768633998/999/634000 — a superseded generation — long after the
+ *  769-series went live. That generation is still on chain and still answers, so
+ *  `ripar score` read it happily and reported every agent at zero: the reads
+ *  succeeded against a registry nobody had written to. */
 export const REGISTRY: Record<string, { identity: number; reputation: number; validation: number }> = {
-  testnet: { identity: 768_633_998, reputation: 768_633_999, validation: 768_634_000 },
+  testnet: { identity: 769_444_119, reputation: 769_444_120, validation: 769_444_121 },
   // Nothing is deployed on MainNet yet. Zero rather than a guess, so a caller
   // gets "not deployed" instead of reading a stranger's app.
   mainnet: { identity: 0, reputation: 0, validation: 0 },

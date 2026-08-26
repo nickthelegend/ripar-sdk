@@ -57,11 +57,11 @@ const MNEMONIC = algosdk.secretKeyToMnemonic(algosdk.generateAccount().sk);
 
 /* ── canned chain bytes, captured from TestNet ──────────────────────────── */
 
-/** ReputationRegistry 768633999, box sc_ + uint64(1): the live agent's score.
+/** ReputationRegistry 769444120, box sc_ + uint64(1): the live agent's score.
  *  Seven uint64s — id 1, paid once, 10000 micro, 2 validated, 0 disputed. */
 const REAL_SCORE_BOX = "AAAAAAAAAAEAAAAAAAAAAQAAAAAAACcQAAAAAAAAAAIAAAAAAAAAAAAAAABqchdhAAAAAGpyF5I=";
 
-/** ValidationRegistry 768634000, box jb_ + uint64(1). A VALIDATED job: the two
+/** ValidationRegistry 769444121, box jb_ + uint64(1). A VALIDATED job: the two
  *  DynamicBytes fields put a 2-byte offset in the head each, which is why the
  *  status sits at byte 68. */
 const REAL_JOB_BOX =
@@ -70,7 +70,7 @@ const REAL_JOB_BOX =
   "07070707070707070707070707070707070707070707070707070707070707070020" +
   "0909090909090909090909090909090909090909090909090909090909090909";
 
-/** IdentityRegistry 768633998, box ag_ + uint64(1). */
+/** IdentityRegistry 769444119, box ag_ + uint64(1). */
 const REAL_AGENT_BOX =
   "0000000000000001003a50471cab61aeb054a415aee5dbc303b539118d1e20ef7530db77004abc831126" +
   "000000006a721756000000006a721756001672697061722d6167656e742e76657263656c2e617070";
@@ -525,7 +525,7 @@ describe("pickAgent", () => {
     expect(score).toMatchObject({ agentId: 1, jobsPaid: 1, volumeMicro: 10_000, validated: 2, disputed: 0 });
     expect(score?.volumeUsd).toBeCloseTo(0.01, 9);
     expect(score?.lastAt).toBe(new Date(1_785_862_034_000).toISOString());
-    expect(algod.seen[0]).toContain("/v2/applications/768633999/box?name=");
+    expect(algod.seen[0]).toContain("/v2/applications/769444120/box?name=");
   });
 
   it("refuses to decode a box that is not a score", async () => {
@@ -831,7 +831,7 @@ function agentStub(opts: AgentStubOptions = {}) {
               : [
                   {
                     uri: "https://ripar.io/a2a/ext/registry/v1",
-                    params: { agentId: opts.agentId ?? 1, identityApp: 768_633_998 },
+                    params: { agentId: opts.agentId ?? 1, identityApp: 769_444_119 },
                   },
                 ],
         },
@@ -1022,8 +1022,8 @@ function boxRef(appId: number, prefix: string, id: number | Uint8Array) {
   return `${appId}:${Buffer.concat([Buffer.from(prefix), raw]).toString("hex")}`;
 }
 
-const IDENTITY = 768_633_998;
-const VALIDATION = 768_634_000;
+const IDENTITY = 769_444_119;
+const VALIDATION = 769_444_121;
 
 describe("ripar audit", () => {
   const registered = readerStub({

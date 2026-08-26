@@ -28,7 +28,7 @@ const cfg = JSON.parse(fs.readFileSync(configPath("testnet-e2e.json"), "utf8"));
    not match `768_547_159`, and neither does a grep for the old id spelled
    without them. `ripar-contracts/scripts/check-registry-ids.mjs` normalises
    both spellings against DEPLOYED.json and is what finally caught it. */
-const IDENTITY_APP = 768_633_998;
+const IDENTITY_APP = 769_444_119;
 const DOMAIN = "ripar-agent.vercel.app";
 
 const algod = new algosdk.Algodv2(

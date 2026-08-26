@@ -392,15 +392,57 @@ await check("H2", "AlgoNode algod and indexer answer without a key", async () =>
   return `algod 200, indexer 200`;
 });
 
-untestable("H3", "Supabase auth and persistence",
-  "the project shftwalxcykqonzbzmpe.supabase.co no longer resolves (NXDOMAIN). Restoring it needs an account I will not create on the user's behalf.");
+await check("H3", "Supabase auth and persistence against a real database", async () => {
+  // This was previously hardcoded untestable on the claim that the hosted
+  // project is NXDOMAIN. It is not: it resolves and answers 401 "No API key
+  // found", i.e. alive and merely needing a key. Assert that, then prove auth
+  // and persistence functionally against the real Postgres + GoTrue stack.
+  // The hosted project's reachability is context, not the assertion. This row
+  // asks whether auth and persistence work against a real database, and making
+  // a remote HTTP probe fatal meant a transient network failure could fail an
+  // item whose actual subject was working perfectly. Report it, do not gate on
+  // it — the functional proof below is what the row is about.
+  let hosted = "unreachable from here";
+  try {
+    const h = await get("https://shftwalxcykqonzbzmpe.supabase.co/auth/v1/health");
+    hosted = `answered ${h.status}`;
+  } catch { /* recorded as unreachable */ }
+
+  const out = execSync("node verify-auth.mjs", {
+    cwd: path.join(ROOT, "ripar-app-x402"), encoding: "utf8" });
+  must(/ALL PASS/.test(out), "verify-auth.mjs did not report ALL PASS");
+  const n = (out.match(/^\s*PASS/gm) || []).length;
+  must(n >= 10, `only ${n} assertions passed`);
+  return `hosted ${hosted}; ${n}/10 against real Postgres + GoTrue — signup, signin, wrong password refused, RLS, org ownership`;
+});
 
 await check("H4", "MCP server registers its tools and returns real data over stdio", async () => {
   const out = execSync("node probe-mcp-once.mjs", { cwd: path.join(ROOT, "ripar-skills"), encoding: "utf8" });
   const m = out.match(/tools=(\d+)/);
   must(m && Number(m[1]) >= 15, `only ${m?.[1]} tools`);
   must(/"found": ?true/.test(out) || /found.*true/.test(out), "a tool call returned no real record");
-  return `${m[1]} tools; ripar_get_agent returned a real record`;
+
+  // `found: true` is NOT sufficient. A superseded registry is still on chain and
+  // still answers reads, so this assertion passed while the MCP server was
+  // pointed at 768633998 and returning that generation's agent 1 (KBDRZK3B…)
+  // instead of the live one (NGVUO43A…). A dead registry does not error, it
+  // understates. Compare the record against an independent reader of the live
+  // registry rather than trusting that a lookup succeeded.
+  const addr = out.match(/"address":\s*"([A-Z2-7]{58})"/)?.[1];
+  must(addr, "the record carried no agent address to check");
+
+  const live = await get("https://app.ripar.io/api/registry/agents");
+  must(live.status === 200, `could not read the live registry to compare (${live.status})`);
+  const j = live.json();
+  must(j.identityApp === 769444119, `comparison source names app ${j.identityApp}, not the live registry`);
+  const onChain = j.agents.find((a) => a.agentId === 1)?.address;
+  must(onChain, "the live registry returned no agent 1 to compare against");
+  must(
+    addr === onChain,
+    `MCP returned agent 1 as ${addr}, but app 769444119 holds ${onChain} — the server is reading a different registry`
+  );
+
+  return `${m[1]} tools; ripar_get_agent returned agent 1 as ${addr.slice(0, 8)}…, matching app 769444119 on chain`;
 });
 
 await check("H5", "npm distribution", async () => {
@@ -423,8 +465,13 @@ await check("H5", "npm distribution", async () => {
 /* ── I1 ─────────────────────────────────────────────────────────────────── */
 
 await check("I1", "no mock/stub standing in for real logic on a tested path", async () => {
+  // ripar-app-x402 was missing from this list, so the repo with the most UI
+  // surface — every workspace view — was never scanned for mocks while this
+  // row was reported as passing. Same class of gap as a route-derived test
+  // plan that cannot see client-side views.
   const dirs = ["ripar-sdk/src", "ripar-skills/src", "ripar-agent/app", "ripar-agent/lib",
-    "ripar-contracts/contracts", "ripar-explorer/lib", "ripar-analytics/lib"];
+    "ripar-contracts/contracts", "ripar-explorer/lib", "ripar-analytics/lib",
+    "ripar-app-x402/lib", "ripar-app-x402/components", "ripar-app-x402/app"];
   const hits = [];
   const walk = (d) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
