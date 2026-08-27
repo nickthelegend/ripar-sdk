@@ -125,6 +125,39 @@ function fetchWithAlgod(account: Record<string, unknown> | null, status = 200) {
 
 /** Fails loudly instead of hanging for the whole test timeout — a deadlock that
  *  looks like a slow test is a deadlock that gets ignored. */
+/**
+ * A rendezvous for the /slow endpoint.
+ *
+ * `want` is how many callers this test expects to be in flight at once. Each
+ * arrival blocks until that many have arrived, then everyone is released
+ * together. `expire` is a safety valve: if the client legitimately serialises
+ * (which is what the bounded tests assert), the barrier must not hang the
+ * suite — it releases on its own and inFlight simply never climbs.
+ */
+const slowBarrier = {
+  want: 1,
+  waiting: [] as (() => void)[],
+  timer: undefined as ReturnType<typeof setTimeout> | undefined,
+  reset(want: number) {
+    this.release();
+    this.want = want;
+  },
+  release() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    const w = this.waiting;
+    this.waiting = [];
+    for (const r of w) r();
+  },
+  arrive(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.waiting.push(resolve);
+      if (this.waiting.length >= this.want) return this.release();
+      if (!this.timer) this.timer = setTimeout(() => this.release(), 750);
+    });
+  },
+};
+
 async function within<T>(ms: number, work: Promise<T>, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   try {
@@ -170,7 +203,19 @@ beforeAll(async () => {
         handler: async () => {
           inFlight++;
           peakInFlight = Math.max(peakInFlight, inFlight);
-          await sleep(60);
+          // Hold until everyone expected has arrived, rather than sleeping a
+          // fixed 60ms and hoping the windows overlap.
+          //
+          // With a sleep, "did these run concurrently?" was decided by whether
+          // the machine happened to deliver the second request before the first
+          // finished its nap. On a loaded box call 1 was done before call 2
+          // arrived, peakInFlight stayed 1, and the test failed for a reason
+          // that had nothing to do with the limiter. A barrier makes the
+          // overlap a fact of the harness: nobody leaves until everybody is in,
+          // so peakInFlight reaches slowBarrier.want whenever the client really
+          // does run them together — and stays 1 when it genuinely serialises,
+          // which is the thing under test.
+          await slowBarrier.arrive();
           inFlight--;
           return { ok: true };
         },
@@ -349,8 +394,10 @@ describe("concurrency limiter", () => {
   it("runs unbounded when maxConcurrent is not set", async () => {
     inFlight = 0;
     peakInFlight = 0;
+    slowBarrier.reset(4);
     const client = new RiparClient({ mnemonic, network: "testnet" });
     await Promise.all(Array.from({ length: 4 }, () => client.call(`${base}/slow`, {})));
+    slowBarrier.reset(1);
     expect(peakInFlight).toBeGreaterThan(1);
   });
 
@@ -358,14 +405,19 @@ describe("concurrency limiter", () => {
     // call() holds the permit and then calls quote(), which asks for one too.
     // Without re-entrancy this never returns.
     const client = new RiparClient({ mnemonic, network: "testnet", maxConcurrent: 1, maxPrice: "$1.00" });
-    const res = await within(5_000, client.call(`${base}/work`, {}), "call() with maxConcurrent 1");
+    const res = await within(20_000, client.call(`${base}/work`, {}), "call() with maxConcurrent 1");
     expect(res.status).toBe(200);
   });
 
   it("does not deadlock when a batch limiter wraps the client's own", async () => {
     const client = new RiparClient({ mnemonic, network: "testnet", maxConcurrent: 1, maxPrice: "$1.00" });
     const out = await within(
-      10_000,
+      // Two full payment cycles over real local HTTP. This is a deadlock
+      // detector, not a latency budget — a true deadlock never returns, so a
+      // generous deadline still catches it, while a tight one just fails on a
+      // busy machine. Kept under the suite's 30s testTimeout so the failure
+      // still reads "deadlocked" rather than a bare timeout.
+      20_000,
       client.callMany([`${base}/work`, `${base}/once`], { concurrency: 1 }),
       "callMany under two limiters"
     );
