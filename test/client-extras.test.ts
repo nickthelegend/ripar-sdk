@@ -1525,9 +1525,19 @@ describe("a retry after a dropped connection", () => {
     // The failure this exists for: the server ran the handler and settled, and
     // the answer never reached the caller. Everything the caller can see says
     // the call failed.
+    // Drop the WORK response specifically, not "the first 200 anything".
+    //
+    // The client also talks to the facilitator (/supported, /verify, /settle),
+    // and those answer 200 too. A counter that fired on the first 200 it saw
+    // was a race: whichever request happened to land first consumed the drop,
+    // so roughly one run in three spent it on /supported and never dropped the
+    // answer this test is about — failing on `attempts` and `replayed` for a
+    // reason that had nothing to do with the behaviour under test.
+    const workUrl = `${base}/work`;
     const flaky = (async (url: string | URL | Request, init?: RequestInit) => {
       const res = await globalThis.fetch(url as string, init);
-      if (res.status === 200 && dropped === 0) {
+      const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (href === workUrl && res.status === 200 && dropped === 0) {
         dropped++;
         throw new TypeError("socket hang up");
       }
