@@ -1,6 +1,9 @@
 {
   "name": "@ripar/sdk",
   "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "Ship a paid HTTP endpoint on Algorand. Define a handler, set a price, and every call settles in USDC over x402.",
   "license": "MIT",
   "type": "module",
