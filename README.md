@@ -3,17 +3,13 @@
 Ship a paid HTTP endpoint on Algorand. Write a handler, set a price, and every
 call settles in USDC over [x402](https://docs.ripar.io/concepts/x402).
 
-> **Not on npm yet.** `npm install @ripar/sdk` will 404 — version 0.1.0 has not
-> been published. Until it is, install from the repo:
->
-> ```bash
-> git clone https://github.com/nickthelegend/ripar-sdk && cd ripar-sdk
-> npm install && npm run build
-> npm link                       # then `npm link @ripar/sdk` in your project
-> ```
->
-> Every import below is the real published surface, so nothing changes when it
-> ships.
+```bash
+npm install @ripar/sdk
+```
+
+Published as `@ripar/sdk@0.1.0`. Installing it puts a `ripar` command on your
+path — `ripar quote <url>` reads a live price for free, no wallet and no
+account, which is the fastest way to see what this does.
 
 ## Start from a template
 
