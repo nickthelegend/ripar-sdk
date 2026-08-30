@@ -58,3 +58,26 @@ describe("cli help parity", () => {
     expect(undocumented, `no --help text: ${undocumented.join(", ")}`).toEqual([]);
   });
 });
+
+/**
+ * The package carries two registry-id tables: `REGISTRY` in cli-chain.ts, which
+ * the CLI reads, and `REPUTATION_APP` in client-extras.ts, which
+ * reputation-weighted selection reads. They drifted — the first moved to the
+ * audited generation and the second did not, so `pickAgent` ranked agents on a
+ * superseded registry while `ripar score` read the live one. Both "worked".
+ *
+ * One table would be better. Until then, this fails the moment they disagree.
+ */
+describe("registry id tables agree", () => {
+  it("REPUTATION_APP.testnet matches REGISTRY.testnet.reputation", async () => {
+    const { REGISTRY } = await import("../src/cli-chain.js");
+    const { REPUTATION_APP } = await import("../src/client-extras.js");
+    expect(REPUTATION_APP.testnet).toBe(REGISTRY.testnet.reputation);
+  });
+
+  it("both agree there is nothing on mainnet yet", async () => {
+    const { REGISTRY } = await import("../src/cli-chain.js");
+    const { REPUTATION_APP } = await import("../src/client-extras.js");
+    expect(REPUTATION_APP.mainnet).toBe(REGISTRY.mainnet.reputation);
+  });
+});

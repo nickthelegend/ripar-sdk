@@ -159,9 +159,19 @@ export function headerRecord(headers: HeadersInit | undefined): Record<string, s
 /* ── 3. reputation-weighted selection ───────────────────────────────────── */
 
 /** The deployed ReputationRegistry. Zero on MainNet because nothing is deployed
- *  there — a guessed id would read a stranger's app and rank on their numbers. */
+ *  there — a guessed id would read a stranger's app and rank on their numbers.
+ *
+ *  This is the SECOND table of registry ids in the package, and it drifted from
+ *  the first: `REGISTRY` in cli-chain.ts moved to the audited generation while
+ *  this stayed on 769444120, so reputation-weighted selection went on ranking
+ *  agents by a superseded registry's numbers. Nothing errored — the old app is
+ *  still on chain and still answers.
+ *
+ *  test/help-parity.test.ts asserts the two agree, because the real fix is
+ *  one table, and until this is merged into that one an assertion is what
+ *  stops them parting again. */
 export const REPUTATION_APP: Record<Network, number> = {
-  testnet: 769_444_120,
+  testnet: 770_382_914,
   mainnet: 0,
   // Zero for the same reason as mainnet, and more so: app ids are per-chain and
   // a LocalNet is recreated from scratch, so any constant here would be stale

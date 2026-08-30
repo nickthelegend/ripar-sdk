@@ -34,6 +34,7 @@ import { run, type CliIO } from "../src/cli.js";
 import { createServer } from "../src/server.js";
 import { defineAgent, defineEndpoint } from "../src/define.js";
 import { ALGORAND_TESTNET_CAIP2 } from "@x402/avm";
+import { REGISTRY } from "../src/cli-chain.js";
 
 /**
  * The second round of client features, and the five commands that check
@@ -57,11 +58,11 @@ const MNEMONIC = algosdk.secretKeyToMnemonic(algosdk.generateAccount().sk);
 
 /* ── canned chain bytes, captured from TestNet ──────────────────────────── */
 
-/** ReputationRegistry 769444120, box sc_ + uint64(1): the live agent's score.
+/** A ReputationRegistry sc_ + uint64(1) box: the live agent's score.
  *  Seven uint64s — id 1, paid once, 10000 micro, 2 validated, 0 disputed. */
 const REAL_SCORE_BOX = "AAAAAAAAAAEAAAAAAAAAAQAAAAAAACcQAAAAAAAAAAIAAAAAAAAAAAAAAABqchdhAAAAAGpyF5I=";
 
-/** ValidationRegistry 769444121, box jb_ + uint64(1). A VALIDATED job: the two
+/** A ValidationRegistry jb_ + uint64(1) box. A VALIDATED job: the two
  *  DynamicBytes fields put a 2-byte offset in the head each, which is why the
  *  status sits at byte 68. */
 const REAL_JOB_BOX =
@@ -70,7 +71,7 @@ const REAL_JOB_BOX =
   "07070707070707070707070707070707070707070707070707070707070707070020" +
   "0909090909090909090909090909090909090909090909090909090909090909";
 
-/** IdentityRegistry 769444119, box ag_ + uint64(1). */
+/** An IdentityRegistry ag_ + uint64(1) box. */
 const REAL_AGENT_BOX =
   "0000000000000001003a50471cab61aeb054a415aee5dbc303b539118d1e20ef7530db77004abc831126" +
   "000000006a721756000000006a721756001672697061722d6167656e742e76657263656c2e617070";
@@ -525,7 +526,7 @@ describe("pickAgent", () => {
     expect(score).toMatchObject({ agentId: 1, jobsPaid: 1, volumeMicro: 10_000, validated: 2, disputed: 0 });
     expect(score?.volumeUsd).toBeCloseTo(0.01, 9);
     expect(score?.lastAt).toBe(new Date(1_785_862_034_000).toISOString());
-    expect(algod.seen[0]).toContain("/v2/applications/769444120/box?name=");
+    expect(algod.seen[0]).toContain(`/v2/applications/${REGISTRY.testnet.reputation}/box?name=`);
   });
 
   it("refuses to decode a box that is not a score", async () => {
@@ -831,7 +832,7 @@ function agentStub(opts: AgentStubOptions = {}) {
               : [
                   {
                     uri: "https://ripar.io/a2a/ext/registry/v1",
-                    params: { agentId: opts.agentId ?? 1, identityApp: 769_444_119 },
+                    params: { agentId: opts.agentId ?? 1, identityApp: REGISTRY.testnet.identity },
                   },
                 ],
         },
@@ -1022,8 +1023,16 @@ function boxRef(appId: number, prefix: string, id: number | Uint8Array) {
   return `${appId}:${Buffer.concat([Buffer.from(prefix), raw]).toString("hex")}`;
 }
 
-const IDENTITY = 769_444_119;
-const VALIDATION = 769_444_121;
+// Derived from the CLI's own table rather than repeated here. These were
+// literals, so when REGISTRY moved to the audited generation the stubs kept
+// serving boxes under the old app ids: the code asked 770382914 for a score,
+// the stub only answered for 769444120, and fifteen tests failed describing
+// symptoms — "expected 1 to be +0" — that had nothing to do with what broke.
+// A fixture that hardcodes what it is testing against cannot survive the thing
+// it exists to check.
+const IDENTITY = REGISTRY.testnet.identity;
+const VALIDATION = REGISTRY.testnet.validation;
+const REPUTATION = REGISTRY.testnet.reputation;
 
 describe("ripar audit", () => {
   const registered = readerStub({
