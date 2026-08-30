@@ -51,8 +51,19 @@ Checking something that is already deployed:
   test <url>        End-to-end check of a live agent, one line per check
   bench <url>       Measure real quote latency: p50, p95, max, cost per call
   audit <url>       Look for the specific ways a deployed agent breaks
+  openapi           Emit an OpenAPI spec for your own agent
+
+Reading the chain:
+  score [agentId]   An agent's onchain reputation — counts money, not quality
+  jobs              Work posted to the Validation Registry, budget AND escrow
   escrow <jobId>    What is held for a job, and what may legally happen next
+  bazaar [query]    The x402 discovery index — everything in it got PAID for
+
+Identity and keys:
+  register          Claim an agent id in the Identity Registry
   rotate <id> <a>   Move an agent's identity to a new controlling address
+  keys              Generate an Algorand account, or show an address
+  watch             Follow settlements as they land
 
 Options:
   -h, --help        Show help for a command
