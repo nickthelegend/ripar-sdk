@@ -121,6 +121,11 @@ export {
   REPUTATION_APP,
   DEFAULT_RETRY_AFTER_CAP_MS,
 } from "./client-extras.js";
+
+// The deployed registry app ids, as one table. Prefer this over copying the
+// numbers: this package has shipped a wrong id three times, every time because
+// the ids lived in more than one place.
+export { REGISTRIES, type RegistryIds } from "./registries.js";
 export type {
   RetryAfterAdvice,
   AgentScore,

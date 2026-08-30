@@ -5,6 +5,7 @@ import { pickAccept } from "./client.js";
 import { readPaymentRequired } from "./headers.js";
 import { openApiDocument } from "./openapi.js";
 import type { AgentDef } from "./types.js";
+import { REGISTRIES, type RegistryIds } from "./registries.js";
 
 /**
  * The commands that read or write the chain, kept out of cli.ts so that file
@@ -28,27 +29,16 @@ const ALGOD: Record<string, string> = {
   mainnet: "https://mainnet-api.algonode.cloud",
 };
 
-/** The deployed registries. Overridable, because a fork or a redeploy makes
- *  hardcoded ids wrong and an id nobody can override is one nobody can fix.
+/** The deployed registries, as one shared table.
  *
- *  These named 768633998/999/634000 — a superseded generation — long after the
- *  769-series went live. That generation is still on chain and still answers, so
- *  `ripar score` read it happily and reported every agent at zero: the reads
- *  succeeded against a registry nobody had written to.
+ *  This used to hold its own copy of the ids, which is how it drifted twice —
+ *  first from 768633998/999/634000 and then from 769444119/120/121 — while
+ *  another copy in client-extras drifted separately. See src/registries.ts for
+ *  what that cost and why there is now one table.
  *
- *  It then happened AGAIN, one generation later: these sat on 769444119/120/121
- *  after the audited 770382913/914/915 went live. Same signature, and it is worth
- *  naming because nothing here errors when it is wrong. `ripar jobs` listed 14
- *  jobs off the old board while the current one held 6, and `ripar score 1` said
- *  agent 1 had never been paid while its sc_ box on the live ReputationRegistry
- *  recorded two validated verdicts. A stale id does not fail; it answers, with
- *  someone else's history. Checked against ripar-contracts/DEPLOYED.json. */
-export const REGISTRY: Record<string, { identity: number; reputation: number; validation: number }> = {
-  testnet: { identity: 770_382_913, reputation: 770_382_914, validation: 770_382_915 },
-  // Nothing is deployed on MainNet yet. Zero rather than a guess, so a caller
-  // gets "not deployed" instead of reading a stranger's app.
-  mainnet: { identity: 0, reputation: 0, validation: 0 },
-};
+ *  Still overridable: a fork or a redeploy makes any hardcoded id wrong, and an
+ *  id nobody can override is one nobody can fix. */
+export const REGISTRY: Record<string, RegistryIds> = REGISTRIES;
 
 const u64 = (n: number) => {
   const b = Buffer.alloc(8);

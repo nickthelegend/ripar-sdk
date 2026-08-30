@@ -60,24 +60,45 @@ describe("cli help parity", () => {
 });
 
 /**
- * The package carries two registry-id tables: `REGISTRY` in cli-chain.ts, which
- * the CLI reads, and `REPUTATION_APP` in client-extras.ts, which
- * reputation-weighted selection reads. They drifted — the first moved to the
- * audited generation and the second did not, so `pickAgent` ranked agents on a
- * superseded registry while `ripar score` read the live one. Both "worked".
+ * There is one registry table now — src/registries.ts — and the two names that
+ * used to hold their own copies are views of it. These assert the views stay
+ * views: if someone reintroduces a literal in either place, this fails.
  *
- * One table would be better. Until then, this fails the moment they disagree.
+ * They drifted once. `REPUTATION_APP` stayed on 769444120 after the CLI moved
+ * to the audited generation, so reputation-weighted selection ranked agents on
+ * a superseded registry while `ripar score` read the live one, and neither
+ * errored, because the old apps are still on chain and still answer.
  */
-describe("registry id tables agree", () => {
-  it("REPUTATION_APP.testnet matches REGISTRY.testnet.reputation", async () => {
+describe("one registry table", () => {
+  it("REGISTRY is the shared table", async () => {
     const { REGISTRY } = await import("../src/cli-chain.js");
-    const { REPUTATION_APP } = await import("../src/client-extras.js");
-    expect(REPUTATION_APP.testnet).toBe(REGISTRY.testnet.reputation);
+    const { REGISTRIES } = await import("../src/registries.js");
+    expect(REGISTRY.testnet).toEqual(REGISTRIES.testnet);
+    expect(REGISTRY.mainnet).toEqual(REGISTRIES.mainnet);
   });
 
-  it("both agree there is nothing on mainnet yet", async () => {
-    const { REGISTRY } = await import("../src/cli-chain.js");
+  it("REPUTATION_APP is a view of the same reputation id", async () => {
+    const { REGISTRIES } = await import("../src/registries.js");
     const { REPUTATION_APP } = await import("../src/client-extras.js");
-    expect(REPUTATION_APP.mainnet).toBe(REGISTRY.mainnet.reputation);
+    expect(REPUTATION_APP.testnet).toBe(REGISTRIES.testnet.reputation);
+    expect(REPUTATION_APP.mainnet).toBe(REGISTRIES.mainnet.reputation);
+    expect(REPUTATION_APP.localnet).toBe(REGISTRIES.localnet.reputation);
+  });
+
+  it("matches the ids ripar-contracts records as deployed", async () => {
+    const { REGISTRIES } = await import("../src/registries.js");
+    // Transcribed from ripar-contracts/DEPLOYED.json. If a redeploy moves the
+    // registries, this is the line that should make you update both.
+    expect(REGISTRIES.testnet).toEqual({
+      identity: 770_382_913,
+      reputation: 770_382_914,
+      validation: 770_382_915,
+    });
+  });
+
+  it("treats an undeployed chain as zero rather than guessing", async () => {
+    const { REGISTRIES } = await import("../src/registries.js");
+    expect(REGISTRIES.mainnet).toEqual({ identity: 0, reputation: 0, validation: 0 });
+    expect(REGISTRIES.localnet).toEqual({ identity: 0, reputation: 0, validation: 0 });
   });
 });
