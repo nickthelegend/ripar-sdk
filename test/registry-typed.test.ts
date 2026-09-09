@@ -14,12 +14,23 @@
 
 import { describe, expect, it } from "vitest";
 import { TypedRegistries } from "../src/registry-typed.js";
+import { REGISTRIES } from "../src/registries.js";
 
-const IDS = {
-  identity: 769_444_119,
-  reputation: 769_444_120,
-  validation: 769_444_121,
-} as const;
+/**
+ * The LIVE generation, from the one shared table — not a copy.
+ *
+ * These read the real chain, and they used to name 769444119/120/121, a
+ * superseded generation. That worked only for as long as nobody tidied up:
+ * reclaim.mjs deregisters agents on dead generations to recover their locked
+ * minimum balance, and the moment it did, `ag_1` and `ag_2` vanished from
+ * 769444119 and these tests started resolving domains to 0.
+ *
+ * The failure looked like a decoder bug ("expected 0n to be 1n") and was
+ * nothing of the kind — the decoder was reading an app that had been emptied on
+ * purpose. Reading the live ids means the data these assertions need is the
+ * data the project actually maintains.
+ */
+const IDS = REGISTRIES.testnet;
 
 const USDC_TESTNET = 10_458_941n;
 
