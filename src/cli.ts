@@ -114,7 +114,8 @@ Options:
   --max-per-day <$> Refuse once this much is spent in a rolling 24h
   --network <n>     mainnet | testnet (default: mainnet)
   --retries <n>     Attempts on 5xx and network errors (default: 3)
-  --idempotency-key <k>  Send Idempotency-Key so a retry is not re-charged
+  --idempotency-key <k>  Send Idempotency-Key. Whether a retry is free is the
+                         SERVER's to honour — many ignore the header entirely
   -h, --help        Show this`,
 
   quote: `ripar quote <url> — read the price without paying
