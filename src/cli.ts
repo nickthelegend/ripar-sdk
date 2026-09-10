@@ -238,11 +238,12 @@ Usage: ripar rotate <agentId> <newAddress> [options]
 Composes IdentityRegistry.rotate_address. Signed by the CURRENT controlling
 address, which is the only signature the contract accepts.
 
-rotate_address is NOT on the deployed registry: the contracts in this repo are
-ahead of the chain. --dry-run works and describes exactly what would be sent; a
-real run is refused with that explanation rather than failing inside the AVM on
-an assert nobody can read. The deployed program is checked for the method's own
-selector before anything is signed.
+Whether the deployed registry routes this method is decided at RUN TIME, not
+stated here: the deployed program is checked for the method's own selector
+before anything is signed. If it is missing, the run is refused with that
+explanation rather than failing inside the AVM on an assert nobody can read.
+This text used to assert the method was absent — it said so for a generation in
+which it was, and went on saying it after a redeploy in which it was not.
 
 The key comes from RIPAR_MNEMONIC. There is no --mnemonic flag: it would land in
 your shell history and in the process list.

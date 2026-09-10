@@ -1234,10 +1234,10 @@ const ROTATE_SIGNATURE = "rotate_address(uint64,address)bool";
 /**
  * Move an agent's identity to a new controlling address.
  *
- * The contracts are ahead of the chain: `rotate_address` exists in
- * identity_registry.py and is NOT in the deployed approval program, so composing
- * the call and sending it would fail inside the AVM's method router with a bare
- * assert — the error every operator reads as "my transaction is malformed".
+ * Whether the deployed approval program routes `rotate_address` varies by
+ * generation, so this makes no claim about it. Composing a call the deployed
+ * router cannot dispatch would fail inside the AVM with a bare assert — the
+ * error every operator reads as "my transaction is malformed".
  *
  * So the deployed program is checked first, by looking for the method's own
  * 4-byte selector in the bytes the chain is actually running. The useful
