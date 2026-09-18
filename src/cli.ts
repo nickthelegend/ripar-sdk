@@ -20,6 +20,7 @@ import {
   cmdWatch,
 } from "./cli-chain.js";
 import { facilitatorSponsorsFees, resolveFacilitatorNetwork } from "./network.js";
+import { formatPayeeVerdict } from "./payee.js";
 import { DEFAULT_FACILITATOR, USDC_ASSET_ID, type Network } from "./types.js";
 
 export const TEMPLATES = ["basic", "llm", "oracle"] as const;
@@ -116,6 +117,16 @@ Options:
   --retries <n>     Attempts on 5xx and network errors (default: 3)
   --idempotency-key <k>  Send Idempotency-Key. Whether a retry is free is the
                          SERVER's to honour — many ignore the header entirely
+  --check-payee     Before paying, check the endpoint's payTo with Ripar's
+                    payee-check ($0.01 per new payee, paid from the same
+                    wallet, cached 24h in ~/.ripar/payee-cache.json). Refuses
+                    an account that does not exist or cannot receive USDC
+  --require-listed  With --check-payee: also refuse a payee that is not
+                    listed in the x402 Bazaar
+  --on-check-error <abort|proceed>
+                    With --check-payee: when the check itself cannot run
+                    (default: abort, and the endpoint is not paid)
+                    The check URL is RIPAR_PAYEE_CHECK_URL when set
   -h, --help        Show this`,
 
   quote: `ripar quote <url> — read the price without paying
@@ -601,12 +612,32 @@ async function cmdCall(flags: Flags, io: CliIO): Promise<number> {
   // typo, and reporting a mnemonic problem first would hide it.
   const body = await readBody(flags, io);
 
+  const checkPayee = "check-payee" in flags.values;
+  if (!checkPayee && ("require-listed" in flags.values || "on-check-error" in flags.values)) {
+    // Silently ignoring these would let a caller believe a check ran that never did.
+    io.err("--require-listed and --on-check-error only apply with --check-payee.");
+    return 1;
+  }
+  const onCheckError = flags.values["on-check-error"];
+  if (onCheckError != null && onCheckError !== "abort" && onCheckError !== "proceed") {
+    io.err(`--on-check-error must be "abort" or "proceed"; got "${onCheckError}".`);
+    return 1;
+  }
+
   const client = new RiparClient({
     mnemonic,
     network: networkOf(flags, io),
     maxPrice: flags.values["max-price"],
     maxPerDay: flags.values["max-per-day"],
     retry: flags.values.retries ? { attempts: Number(flags.values.retries) } : undefined,
+    checkPayee: checkPayee
+      ? {
+          requireListed: "require-listed" in flags.values,
+          onCheckError: onCheckError === "proceed" ? "proceed" : "abort",
+          url: io.env.RIPAR_PAYEE_CHECK_URL,
+          cachePath: io.env.RIPAR_PAYEE_CACHE,
+        }
+      : undefined,
     fetchImpl: io.fetchImpl,
   });
 
@@ -615,6 +646,9 @@ async function cmdCall(flags: Flags, io: CliIO): Promise<number> {
     : {};
 
   const res = await client.call(url, body, init);
+  // stderr, like the settlement line: stdout stays the endpoint's JSON alone,
+  // so piping `ripar call` into jq keeps working with the check on.
+  if (res.payee) for (const line of formatPayeeVerdict(res.payee)) io.err(line);
   io.out(JSON.stringify(res.data, null, 2));
   if (res.payment?.txId) io.err(`settled · ${res.payment.txId}`);
   if ((res.attempts ?? 1) > 1) io.err(`took ${res.attempts} attempts`);
@@ -736,6 +770,9 @@ function num(v: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/** Flags that never take a value. */
+const SWITCHES = new Set(["check-payee", "require-listed"]);
+
 type Flags = { positional: string[]; values: Record<string, string>; help: boolean; force: boolean };
 
 /** A hand-rolled parser rather than a dependency: the CLI ships inside the SDK,
@@ -756,6 +793,10 @@ export function parseFlags(argv: string[]): Flags {
       const [key, inline] = splitOnce(arg.slice(2), "=");
       if (inline != null) {
         values[key] = inline;
+      } else if (SWITCHES.has(key)) {
+        // Takes no value, so the next word is never swallowed as one:
+        // `ripar call --check-payee <url>` must still see the URL.
+        values[key] = "";
       } else if (argv[i + 1] != null && !argv[i + 1].startsWith("--")) {
         values[key] = argv[++i];
       } else {

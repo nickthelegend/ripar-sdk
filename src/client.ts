@@ -21,6 +21,17 @@ import {
 } from "./client-extras.js";
 import { readPaymentRequired, readReceiptHeader, usdOfAccept } from "./headers.js";
 import { Limiter } from "./limiter.js";
+import {
+  PayeeCache,
+  isPayeeCheckUrl,
+  judgePayee,
+  networkOfAccept,
+  parsePayeeCheck,
+  resolveCheckPayee,
+  type CheckPayeeOptions,
+  type PayeeVerdict,
+  type ResolvedPayeeCheck,
+} from "./payee.js";
 import { resolveFacilitator, type FacilitatorChoice } from "./network.js";
 import { QuoteCache, quoteKey, type QuoteCacheOptions } from "./quotecache.js";
 import { ReceiptLedger, exportReceipts, type ReceiptRecord } from "./receipts.js";
@@ -69,6 +80,11 @@ export type ClientOptions = {
   facilitatorUrls?: string[];
   /** How many receipts to keep in memory. Default 1000, oldest dropped. */
   receiptsLimit?: number;
+  /** Check an unfamiliar payee with Ripar's paid payee-check endpoint before
+   *  paying it, and refuse one that cannot receive the payment. OFF unless set:
+   *  each check costs $0.01, paid from this client's wallet, and a verdict is
+   *  cached for 24h per network+address. See payee.ts. */
+  checkPayee?: boolean | CheckPayeeOptions;
   fetchImpl?: typeof fetch;
 };
 
@@ -84,6 +100,8 @@ export type CallResult<T = unknown> = {
    *  than running the handler again. Proof the retry was free: there is no
    *  second receipt because there was no second settlement. */
   replayed?: boolean;
+  /** Present when `checkPayee` is on and the call had a payee to check. */
+  payee?: PayeeVerdict;
 };
 
 export type QuoteResult =
@@ -181,6 +199,17 @@ export class RiparClient {
    *  credentials for a window the caller already paid for, so writing it to disk
    *  is the caller's decision, not ours. `activeSubscriptions` exposes them. */
   private readonly subscriptions = new Map<string, StoredKey>();
+  private readonly payeeCheck: ResolvedPayeeCheck | null;
+  private readonly payeeCache?: PayeeCache;
+  /** Pays WITHOUT the payee gate. Used only for the payee-check endpoint
+   *  itself, whose own payee is the one address the gate can never have
+   *  cleared — gating it would make every check refuse itself. */
+  private uncheckedFetch?: typeof fetch;
+  /** Payees a call in flight has cleared, with how many calls cleared each.
+   *  The signing hook consults this, not the cache: a count per in-flight call
+   *  means an address is payable exactly while some call that vetted it is
+   *  running, and not a moment after. */
+  private readonly payeeAllowance = new Map<string, number>();
 
   constructor(opts: ClientOptions = {}) {
     this.network = opts.network ?? "mainnet";
@@ -197,6 +226,8 @@ export class RiparClient {
     this.receiptLedger = new ReceiptLedger(opts.receiptsLimit);
     this.retryAfterMaxMs = opts.retryAfterMaxMs;
     this.idempotency = opts.idempotency !== false;
+    this.payeeCheck = resolveCheckPayee(opts.checkPayee);
+    if (this.payeeCheck) this.payeeCache = new PayeeCache(this.payeeCheck.cachePath, this.payeeCheck.ttlMs);
 
     // toClientAvmSigner takes a BASE64 64-byte key, not raw bytes — passing a
     // Uint8Array typechecks as `any` in JS and fails at signing time.
@@ -235,6 +266,26 @@ export class RiparClient {
         schemes: [{ network: "algorand:*", client: new ExactAvmScheme(signer) }],
         spendControls: false,
       });
+      if (this.payeeCheck) {
+        // The check in callOnce runs against the payTo of a QUOTE, and the
+        // payment is signed against the payTo of a SECOND 402 moments later.
+        // Nothing obliges a server to name the same address twice, so the gate
+        // is here, at the last point before a signature exists, and it reads
+        // the requirements actually being signed. An address no in-flight call
+        // vetted is refused rather than paid.
+        this.uncheckedFetch = wrapFetchWithPayment(
+          this.baseFetch,
+          x402Client.fromConfig({
+            schemes: [{ network: "algorand:*", client: new ExactAvmScheme(signer) }],
+            spendControls: false,
+          })
+        ) as typeof fetch;
+        client.onBeforePaymentCreation(async ({ selectedRequirements }) => {
+          const payTo = String(selectedRequirements.payTo ?? "");
+          if ((this.payeeAllowance.get(payTo) ?? 0) > 0) return;
+          return { abort: true, reason: `${PAYEE_GATE} ${payTo}` };
+        });
+      }
       this.paidFetch = wrapFetchWithPayment(this.baseFetch, client) as typeof fetch;
     }
   }
@@ -399,13 +450,21 @@ export class RiparClient {
     const covered = key != null && !isExpired(key);
     if (key && !covered) this.subscriptions.delete(canonical(url));
 
+    // The payee-check endpoint is never itself payee-checked: its payee is
+    // Ripar's, and checking it would pay for a check to pay for a check.
+    const vetting =
+      this.payeeCheck && !isPayeeCheckUrl(url, this.payeeCheck.url) ? this.payeeCheck : null;
+    const fetchFor = this.payeeCheck && !vetting ? this.uncheckedFetch! : this.paidFetch;
+    const pricing = this.maxPrice != null || this.ledger != null || this.preflightBalance;
+
     let quoted: number | null = null;
-    if (!covered && (this.maxPrice != null || this.ledger || this.preflightBalance)) {
+    let payee: PayeeVerdict | undefined;
+    if (!covered && (pricing || vetting)) {
       const q = await this.quote(url, { ...init, body: body != null ? JSON.stringify(body) : undefined });
       if (q.paymentRequired) {
         const picked = pickAccept(q.requirements);
         quoted = picked?.usd ?? null;
-        if (quoted == null || !picked) {
+        if (pricing && (quoted == null || !picked)) {
           // Fail closed. A guard that cannot read the quote must refuse, not pay
           // an amount it never saw.
           throw new RiparError(
@@ -417,11 +476,117 @@ export class RiparClient {
             q.requirements
           );
         }
-        this.assertAffordable(quoted, q.requirements);
-        if (this.preflightBalance) await this.assertWalletCovers(picked.accept, q.requirements);
+        if (quoted != null) this.assertAffordable(quoted, q.requirements);
+        if (this.preflightBalance && picked) await this.assertWalletCovers(picked.accept, q.requirements);
+        // AFTER the caps: a call the caps would refuse is not worth $0.01 to vet.
+        if (vetting) {
+          payee = await this.vetPayee(url, picked?.accept ?? firstAcceptOf(q.requirements), q.requirements, vetting);
+          // The check may itself have spent against the daily cap.
+          if (quoted != null) this.assertAffordable(quoted, q.requirements);
+        }
       }
     }
+    if (payee) this.adjustAllowance(payee.address, +1);
+    try {
+      return await this.payLoop<T>(url, body, init, fetchFor, quoted, payee);
+    } finally {
+      if (payee) this.adjustAllowance(payee.address, -1);
+    }
+  }
 
+  private adjustAllowance(address: string, by: number) {
+    const n = (this.payeeAllowance.get(address) ?? 0) + by;
+    if (n > 0) this.payeeAllowance.set(address, n);
+    else this.payeeAllowance.delete(address);
+  }
+
+  /**
+   * Decide whether this call may pay `accept.payTo`: from the cache when a
+   * fresh verdict is there, otherwise by paying for a check. Throws on a refusal
+   * and — unless `onCheckError` is "proceed" — on a check that could not run.
+   */
+  private async vetPayee(
+    url: string,
+    accept: Record<string, any> | null,
+    requirements: unknown,
+    opts: ResolvedPayeeCheck
+  ): Promise<PayeeVerdict> {
+    const address = accept?.payTo != null ? String(accept.payTo) : "";
+    if (!address) {
+      // Fail closed: the caller asked for the payee to be checked, and a quote
+      // that names none leaves nothing to check and nothing to pay safely.
+      throw new RiparError(
+        `${url} asked for payment but its quote names no payTo, so the payee cannot be checked. Refusing to pay.`,
+        "payee_unreadable",
+        402,
+        requirements
+      );
+    }
+    const network = networkOfAccept(accept?.network, this.network);
+
+    let result;
+    let source: PayeeVerdict["source"] = "cache";
+    const hit = this.payeeCache?.get(network, address);
+    if (hit) {
+      result = hit.result;
+    } else {
+      source = "check";
+      try {
+        const res = await this.call(opts.url, { address, network });
+        result = parsePayeeCheck(res.data);
+        if (result.address && result.address !== address) {
+          throw new RiparError(
+            `the check answered for ${result.address}, not ${address}`,
+            "payee_check_unreadable"
+          );
+        }
+      } catch (err) {
+        const why = (err as Error).message;
+        if (opts.onCheckError === "proceed") {
+          return { address, network, ok: true, source: "unchecked", facts: [], reason: `the payee check could not run: ${why}` };
+        }
+        throw new RiparError(
+          `Could not check payee ${address} (${network}) before paying ${url}: ${why} ` +
+            `${url} was NOT paid. Retry, or set checkPayee.onCheckError to "proceed" to pay without the check.`,
+          "payee_check_failed",
+          (err as RiparError).status,
+          err
+        );
+      }
+      this.payeeCache?.set(network, address, result);
+    }
+
+    const verdict = judgePayee(result, opts);
+    const out: PayeeVerdict = {
+      address,
+      network,
+      ok: verdict.ok,
+      source,
+      facts: result.facts,
+      result,
+      ...(verdict.ok ? {} : { reason: verdict.reason }),
+    };
+    if (!verdict.ok) {
+      throw new RiparError(
+        `Refusing to pay ${url}: ${verdict.reason}.` +
+          (result.facts.length ? ` Facts: ${result.facts.join(" ")}` : ""),
+        "payee_refused",
+        402,
+        out
+      );
+    }
+    return out;
+  }
+
+  /** The send-sign-retry loop, once every pre-payment check has passed. */
+  private async payLoop<T>(
+    url: string,
+    body: unknown,
+    init: RequestInit,
+    fetchFor: typeof fetch,
+    quoted: number | null,
+    payee: PayeeVerdict | undefined
+  ): Promise<CallResult<T>> {
     const attempts = this.retry === false ? 1 : Math.max(1, this.retry.attempts ?? DEFAULT_RETRY.attempts);
     let lastError: RiparError | undefined;
 
@@ -459,7 +624,7 @@ export class RiparClient {
         // composed object with `init.headers`, dropping content-type and the
         // subscription key — so passing any header at all made the call unpaid
         // and the body unparsed.
-        res = await this.paidFetch(url, {
+        res = await fetchFor(url, {
           method: "POST",
           ...init,
           headers: {
@@ -475,6 +640,21 @@ export class RiparClient {
           body: body != null ? JSON.stringify(body) : (init.body as BodyInit | undefined),
         });
       } catch (err) {
+        // The payee gate refused to sign. Not a network error and not worth a
+        // retry: the server asked to be paid at an address no check cleared,
+        // and asking again gets the same answer. A held key is dropped too — a
+        // gate refusal means the server stopped honouring it and wanted money.
+        const refused = String((err as Error)?.message ?? "").match(new RegExp(`${PAYEE_GATE} (\\S*)`));
+        if (refused) {
+          this.subscriptions.delete(canonical(url));
+          throw new RiparError(
+            `${url} asked to be paid at ${refused[1] || "an unnamed address"}, which is not the payee that was ` +
+              `checked before this call${payee ? ` (${payee.address})` : ""}. Refusing to sign; nothing was paid.`,
+            "payee_unchecked",
+            402,
+            err
+          );
+        }
         // No response at all — DNS, reset, TLS, abort. Nothing settled, so
         // repeating is safe as well as sensible.
         lastError = new RiparError(
@@ -515,6 +695,7 @@ export class RiparClient {
           status: res.status,
           attempts: attempt,
           ...(replayed ? { replayed: true } : {}),
+          ...(payee ? { payee } : {}),
         };
       }
 
@@ -923,6 +1104,20 @@ export class RiparClient {
       );
     }
   }
+}
+
+/** Marks an abort raised by the payee gate, so callOnce can tell it from a
+ *  transport failure — which it would otherwise retry. */
+const PAYEE_GATE = "ripar-payee-gate:";
+
+/** The first `accepts` entry, whatever its price — for the payee check, which
+ *  needs a payTo and not a readable amount. */
+function firstAcceptOf(req: unknown): Record<string, any> | null {
+  if (!req || typeof req !== "object") return null;
+  const r = req as Record<string, any>;
+  const accepts = r.accepts ?? r;
+  const first = Array.isArray(accepts) ? accepts[0] : accepts;
+  return first && typeof first === "object" ? first : null;
 }
 
 function parseUsd(v: string, field: string) {

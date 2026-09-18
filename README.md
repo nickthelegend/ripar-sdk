@@ -25,7 +25,7 @@ cd my-agent && npm install && ripar dev
 | `ripar init <name>` | Scaffold from a template |
 | `ripar dev [entry]` | Run an agent locally — no build step, node strips the types |
 | `ripar quote <url>` | Read a price. Free, no wallet, no funds |
-| `ripar call <url>` | Pay for and invoke an endpoint |
+| `ripar call <url>` | Pay for and invoke an endpoint. `--check-payee` vets the payee first ($0.01 per new payee, cached 24h) |
 | `ripar manifest <url>` | Print an agent's published manifest |
 | `ripar doctor` | Check node, facilitator, network and payout address before you advertise a URL |
 
@@ -133,6 +133,51 @@ failures only**. A 4xx is never retried: a 402 is the handshake, a 400 will be
 wrong again, and repeating either can pay twice for the same mistake. Both caps
 are checked against the quote *before* anything is signed, and a quote the
 client cannot read is refused rather than paid blind.
+
+### Checking the payee first (opt-in, $0.01)
+
+An agent that found an endpoint five minutes ago is about to pay an address
+nobody has looked at. `checkPayee` asks Ripar's paid
+[payee-check](https://api.ripar.io/api/payee-check) about the quote's `payTo`
+*before* signing: does the account exist, can it receive USDC, how often has it
+really been paid over x402, is it Bazaar-listed.
+
+```ts
+const ripar = new RiparClient({
+  mnemonic: process.env.WALLET_MNEMONIC,
+  checkPayee: { requireListed: false, onCheckError: "abort" }, // or just `true`
+});
+
+const res = await ripar.call("https://api.example.com/summarize", { text: "…" });
+res.payee; // { address, network, ok: true, source: "check" | "cache", facts: [...] }
+```
+
+```bash
+ripar call https://api.example.com/summarize --body '{"text":"…"}' --check-payee
+# payee 3QAJXJ…ELWNY (mainnet) ok · checked, $0.01
+#   - Account exists. …
+```
+
+- **Off by default.** Each check is a real x402 call to
+  `POST https://api.ripar.io/api/payee-check`, **$0.01 USDC on MainNet**, paid
+  from the same wallet (and counted against `maxPrice` / `maxPerDay`).
+- **Cached 24h per network+address** in `~/.ripar/payee-cache.json`
+  (`RIPAR_PAYEE_CACHE` or `cachePath` to move it, `cachePath: false` for memory
+  only), so a payee you call all day costs one check. A missing, corrupt or
+  unwritable cache costs at most another check, never a failed call.
+- **Refuses** — before the endpoint is paid, with the facts in the error
+  (`payee_refused`) — when `exists` or `canReceiveUsdc` is false, or when
+  `requireListed` / `--require-listed` is set and the payee is not in the
+  Bazaar. Everything else is reported, not judged.
+- **If the check itself fails** (network, 5xx, an answer that is not a
+  verdict) the call aborts with `payee_check_failed` and the endpoint is not
+  paid. `onCheckError: "proceed"` / `--on-check-error proceed` pays anyway and
+  marks `res.payee.source` as `"unchecked"`.
+- The payment is gated on the `payTo` actually being **signed**, not just the
+  one quoted: a server that names a different address on the second 402 is
+  refused (`payee_unchecked`).
+- The payee-check endpoint's own payee is never checked. Override the endpoint
+  with `checkPayee.url` or `RIPAR_PAYEE_CHECK_URL`.
 
 ## Watching it
 

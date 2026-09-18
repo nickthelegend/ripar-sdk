@@ -27,6 +27,17 @@ export type {
   SettledCall,
   SubscribeAdvice,
 } from "./client.js";
+export {
+  PayeeCache,
+  judgePayee,
+  parsePayeeCheck,
+  resolveCheckPayee,
+  isPayeeCheckUrl,
+  formatPayeeVerdict,
+  DEFAULT_PAYEE_CHECK_URL,
+  PAYEE_CACHE_TTL_MS,
+} from "./payee.js";
+export type { CheckPayeeOptions, PayeeCheckResult, PayeeVerdict } from "./payee.js";
 export { Limiter } from "./limiter.js";
 export { QuoteCache, quoteKey, DEFAULT_QUOTE_TTL_MS, DEFAULT_QUOTE_MAX } from "./quotecache.js";
 export type { QuoteCacheOptions } from "./quotecache.js";
